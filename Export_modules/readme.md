@@ -14,11 +14,11 @@ Files are exported to a specific folder.
 
 1. **Clone or download this repository.**
 2. **Create a `.env` file in the project root** with the following content:
-   ```env
+```.env
    ACCESS_ID=your_access_id
    ACCESS_KEY=your_access_key
    COMPANY=your_company_name
-
+```
 ---
 
 ## Output
@@ -44,10 +44,11 @@ Covered module types (API v3 endpoints):
 
 
 ## Examples:
-  python export_modules.py --types datasources eventsources --out output
-  python export_modules.py --types all --out output --size 200 --sleep 0.2
-  python export_modules.py --types datasources --filter 'name~"CPU"' --out output
-
+```
+   python export_modules.py --types datasources eventsources --out output
+   python export_modules.py --types all --out output --size 200 --sleep 0.2
+   python export_modules.py --types datasources --filter 'name~"CPU"' --out output
+```
 Notes:
 - Adds retry (3 attempts) for transient errors and continues on module-type failure.
 - If HTTP 429 (rate limited): sleeps 30 seconds (or honors Retry-After) then retries.
