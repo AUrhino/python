@@ -49,7 +49,7 @@ Covered module types (API v3 endpoints):
    python export_modules.py --types all --out output --size 200 --sleep 0.2
    python export_modules.py --types datasources --filter 'name~"CPU"' --out output
 ```
-Notes:
+## Notes:
 - Adds retry (3 attempts) for transient errors and continues on module-type failure.
 - If HTTP 429 (rate limited): sleeps 30 seconds (or honors Retry-After) then retries.
 - Writes one JSON file per module item, plus an index file per module type.
