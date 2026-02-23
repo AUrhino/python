@@ -1,7 +1,7 @@
 """
 LogicMonitor API - Export LogicModules (Modules)
 ------------------------------------------------
-Exports LogicMonitor "modules" (LM Modules) to JSON files, by module type.
+Exports LogicMonitor "modules" (LogicModules) to JSON files, by module type.
 
 Covered module types (API v3 endpoints):
 - DataSources        : /setting/datasources
@@ -18,8 +18,8 @@ Requirements:
 - Python 3.8+
 - requests, python-dotenv
 
-Create a file next to this python code called .env  
-The content of .env file:
+Create a creds file called .env
+.env file:
 ACCESS_ID=your_access_id
 ACCESS_KEY=your_access_key
 COMPANY=your_company_name
@@ -27,11 +27,16 @@ COMPANY=your_company_name
 Usage examples:
   python export_modules.py --types datasources eventsources --out output
   python export_modules.py --types all --out output --size 200 --sleep 0.2
-  python export_modules.py --types datasources --filter "name~\"CPU\"" --out output
+  python export_modules.py --types datasources --filter 'name~"CPU"' --out output
 
 Notes:
-- Uses offset/size pagination where supported.
+- Adds retry (3 attempts) for transient errors and continues on module-type failure.
+- If HTTP 429 (rate limited): sleeps 30 seconds (or honors Retry-After) then retries.
 - Writes one JSON file per module item, plus an index file per module type.
+
+Created by Ryan Gillan
+ryan.gillan@logicmonitor.com
+
 """
 
 import os
@@ -42,6 +47,7 @@ import json
 import base64
 import hashlib
 import argparse
+import random
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -77,21 +83,106 @@ def generate_auth_headers(http_verb: str, resource_path: str, data: str = "") ->
     ).hexdigest()
     signature = base64.b64encode(hmac_hash.encode("utf-8")).decode("utf-8")
     auth = f"LMv1 {ACCESS_ID}:{signature}:{epoch}"
-    return {"Content-Type": "application/json", "Authorization": auth}
+    return {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": auth,
+    }
 
 
-def api_get(resource_path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+# Retry on these (excluding 429; handled explicitly for 30s sleep)
+RETRY_STATUS_CODES = {406, 408, 500, 502, 503, 504}
+
+
+def api_get(
+    resource_path: str,
+    params: Optional[Dict[str, Any]] = None,
+    retries: int = 3,
+    backoff_base: float = 1.0,
+    rate_limit_sleep_s: int = 30,
+) -> Dict[str, Any]:
     """
-    Perform a GET request to the LogicMonitor API.
+    Perform a GET request to the LogicMonitor API with retry handling.
+    - If 429 (rate limited): sleep 30s (or Retry-After) then retry.
+    - Retries on transient HTTP status codes and network errors.
     """
     url = BASE_URL + resource_path
-    headers = generate_auth_headers("GET", resource_path)
-    resp = requests.get(url, headers=headers, params=params, timeout=60)
+    params = params or {}
 
-    if resp.status_code != 200:
-        raise RuntimeError(f"GET {resource_path} failed: {resp.status_code} - {resp.text}")
+    last_err: Optional[Exception] = None
 
-    return resp.json()
+    for attempt in range(1, retries + 1):
+        try:
+            headers = generate_auth_headers("GET", resource_path)
+            resp = requests.get(url, headers=headers, params=params, timeout=60)
+
+            if resp.status_code == 200:
+                return resp.json()
+
+            # Auth / permission issues: fail fast
+            if resp.status_code in (401, 403):
+                msg = resp.text.strip() or "<empty body>"
+                raise RuntimeError(f"GET {resource_path} failed: {resp.status_code} - {msg}")
+
+            # Rate limit: sleep 30s (or Retry-After) then retry
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After")
+                sleep_s = rate_limit_sleep_s
+                if retry_after:
+                    try:
+                        sleep_s = int(float(retry_after))
+                    except ValueError:
+                        pass
+
+                msg = resp.text.strip() or "<empty body>"
+                print(
+                    f"Rate limited: GET {resource_path} returned 429 (attempt {attempt}/{retries}). "
+                    f"Sleeping {sleep_s}s. Body: {msg}"
+                )
+
+                if attempt < retries:
+                    time.sleep(sleep_s)
+                    continue
+
+                raise RuntimeError(f"GET {resource_path} failed after {retries} attempts: 429 - {msg}")
+
+            # Retry on transient-ish statuses
+            if resp.status_code in RETRY_STATUS_CODES:
+                msg = resp.text.strip() or "<empty body>"
+                print(
+                    f"Warning: GET {resource_path} returned {resp.status_code} "
+                    f"(attempt {attempt}/{retries}). Body: {msg}"
+                )
+                if attempt < retries:
+                    sleep_s = backoff_base * (2 ** (attempt - 1)) + random.uniform(0, 0.25)
+                    time.sleep(sleep_s)
+                    continue
+                raise RuntimeError(
+                    f"GET {resource_path} failed after {retries} attempts: {resp.status_code} - {msg}"
+                )
+
+            # Other status codes: fail fast
+            msg = resp.text.strip() or "<empty body>"
+            raise RuntimeError(f"GET {resource_path} failed: {resp.status_code} - {msg}")
+
+        except (
+            requests.exceptions.Timeout,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ChunkedEncodingError,
+        ) as e:
+            last_err = e
+            print(f"Warning: network error on GET {resource_path} (attempt {attempt}/{retries}): {e}")
+            if attempt < retries:
+                sleep_s = backoff_base * (2 ** (attempt - 1)) + random.uniform(0, 0.25)
+                time.sleep(sleep_s)
+                continue
+            raise RuntimeError(
+                f"GET {resource_path} failed after {retries} attempts due to network errors: {e}"
+            )
+
+    if last_err:
+        raise last_err
+    return {}
 
 
 # -----------------------------
@@ -118,7 +209,6 @@ def ensure_dir(path: str) -> None:
 def extract_items(payload: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Extract items + meta from LM standard response.
-    Many endpoints return { "data": { "items": [...], "total": n, ... }, "status": ..., ... }
     """
     data = payload.get("data") or {}
     items = data.get("items") or []
@@ -127,7 +217,6 @@ def extract_items(payload: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[s
         "searchId": data.get("searchId"),
         "filteredCount": (payload.get("meta") or {}).get("filteredCount"),
     }
-    # items might sometimes not be list; normalize
     if not isinstance(items, list):
         items = []
     return items, meta
@@ -142,7 +231,6 @@ def write_json(path: str, obj: Any) -> None:
 # Module Exporter
 # -----------------------------
 MODULE_ENDPOINTS = {
-    # logical name      # endpoint path
     "datasources": "/setting/datasources",
     "eventsources": "/setting/eventsources",
     "logsources": "/setting/logsources",
@@ -154,7 +242,6 @@ MODULE_ENDPOINTS = {
     "oids": "/setting/oids",
 }
 
-# Some endpoints accept format=json (per swagger); harmless to send everywhere.
 DEFAULT_FORMAT = "json"
 
 
@@ -167,7 +254,6 @@ def list_all_items(
 ) -> List[Dict[str, Any]]:
     """
     Fetch all items for a list endpoint with offset/size paging.
-    If an endpoint ignores size/offset, you'll typically get everything at once.
     """
     all_items: List[Dict[str, Any]] = []
     offset = 0
@@ -183,10 +269,9 @@ def list_all_items(
         items, meta = extract_items(payload)
         all_items.extend([i for i in items if isinstance(i, dict)])
 
-        # Stop conditions:
-        # - If server returns fewer than requested, likely end of page.
-        # - If total is provided and we reached it.
         total = meta.get("total")
+
+        # Optional pacing between pages (separate from 429 handling)
         if items and sleep_s > 0:
             time.sleep(sleep_s)
 
@@ -213,9 +298,12 @@ def export_module_type(
     filter_expr: Optional[str],
 ) -> None:
     """
-    Export one module type:
-    - Writes /<out_dir>/<module_key>/index.json (full list)
-    - Writes /<out_dir>/<module_key>/<id>__<name>.json per item
+    Export one module type and continue on error.
+
+    Writes:
+      - <out_dir>/<module_key>/index.json
+      - <out_dir>/<module_key>/<id>__<name>.json
+      - <out_dir>/<module_key>/_error.txt (if failed)
     """
     if module_key not in MODULE_ENDPOINTS:
         raise ValueError(f"Unknown module type: {module_key}")
@@ -225,24 +313,34 @@ def export_module_type(
     ensure_dir(module_dir)
 
     print(f"\n== Exporting {module_key} from {resource_path} ==")
-    items = list_all_items(
-        resource_path=resource_path,
-        size=size,
-        sleep_s=sleep_s,
-        fields=fields,
-        filter_expr=filter_expr,
-    )
 
-    # Save index
+    try:
+        items = list_all_items(
+            resource_path=resource_path,
+            size=size,
+            sleep_s=sleep_s,
+            fields=fields,
+            filter_expr=filter_expr,
+        )
+    except Exception as e:
+        err_path = os.path.join(module_dir, "_error.txt")
+        with open(err_path, "w", encoding="utf-8") as f:
+            f.write(str(e) + "\n")
+        print(f"ERROR exporting {module_key}: {e}")
+        print(f"Continuing. Details saved to: {err_path}")
+        return
+
     index_path = os.path.join(module_dir, "index.json")
     write_json(index_path, items)
     print(f"Saved {len(items)} items -> {index_path}")
 
-    # Save individual items
     for item in items:
         item_id = item.get("id")
         name = item.get("name") or item.get("displayName") or "unnamed"
-        fname = f"{item_id}__{safe_filename(str(name))}.json" if item_id is not None else f"{safe_filename(str(name))}.json"
+        if item_id is not None:
+            fname = f"{item_id}__{safe_filename(str(name))}.json"
+        else:
+            fname = f"{safe_filename(str(name))}.json"
         write_json(os.path.join(module_dir, fname), item)
 
     print(f"Wrote per-item files -> {module_dir}")
