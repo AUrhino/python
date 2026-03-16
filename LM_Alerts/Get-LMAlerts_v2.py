@@ -6,7 +6,7 @@ LogicMonitor Alerts CLI
 
 Modes:
   1) Capture account-wide alerts
-  2) Capture alerts for a specific device
+  2) Capture alerts for a specific object name / monitorObjectName
   3) Fetch a single alert by alert ID
 
 Requirements:
@@ -79,6 +79,7 @@ PREVIEW_REQUIRED_FIELDS = [
     "SDT",
     "cleared",
     "acked",
+    "detailMessage",
 ]
 
 SINGLE_ALERT_REQUIRED_FIELDS = [
@@ -253,6 +254,20 @@ def filter_alerts_since_days(
     return filtered
 
 
+def filter_alerts_by_object_name(
+    alerts: List[Dict[str, Any]], object_name: str
+) -> List[Dict[str, Any]]:
+    target = object_name.strip().lower()
+    filtered: List[Dict[str, Any]] = []
+
+    for alert in alerts:
+        monitor_object_name = str(alert.get("monitorObjectName", "")).strip().lower()
+        if monitor_object_name == target:
+            filtered.append(alert)
+
+    return filtered
+
+
 def alert_sdt_value(alert: Dict[str, Any]) -> str:
     sdted = alert.get("sdted")
     if isinstance(sdted, bool):
@@ -267,6 +282,76 @@ def alert_sdt_value(alert: Dict[str, Any]) -> str:
         return "True"
 
     return ""
+
+
+def normalize_whitespace(value: str) -> str:
+    return " ".join(value.split())
+
+
+def compact_message_value(detail_message: Any) -> str:
+    if detail_message is None:
+        return ""
+
+    if isinstance(detail_message, dict):
+        subject = detail_message.get("subject")
+        body = detail_message.get("body")
+
+        if subject not in (None, ""):
+            return normalize_whitespace(str(subject))
+        if body not in (None, ""):
+            return normalize_whitespace(str(body))
+
+        return normalize_whitespace(
+            json.dumps(detail_message, ensure_ascii=False, separators=(",", ":"))
+        )
+
+    if isinstance(detail_message, list):
+        return normalize_whitespace(
+            json.dumps(detail_message, ensure_ascii=False, separators=(",", ":"))
+        )
+
+    return normalize_whitespace(str(detail_message))
+
+
+def full_message_value(detail_message: Any) -> str:
+    if detail_message is None:
+        return ""
+
+    if isinstance(detail_message, dict):
+        subject = detail_message.get("subject")
+        body = detail_message.get("body")
+        parts: List[str] = []
+
+        if subject not in (None, ""):
+            parts.append(f"Subject: {subject}")
+        if body not in (None, ""):
+            parts.append(f"Body:\n{body}")
+
+        if parts:
+            return "\n".join(parts)
+
+        return json.dumps(detail_message, indent=2, ensure_ascii=False)
+
+    if isinstance(detail_message, list):
+        return json.dumps(detail_message, indent=2, ensure_ascii=False)
+
+    return str(detail_message)
+
+
+def message_value_for_table(detail_message: Any, include_full_body: bool = False) -> str:
+    if include_full_body:
+        return full_message_value(detail_message)
+    return compact_message_value(detail_message)
+
+
+def pretty_message_value(detail_message: Any) -> str:
+    if detail_message is None:
+        return ""
+
+    if isinstance(detail_message, (dict, list)):
+        return json.dumps(detail_message, indent=2, ensure_ascii=False)
+
+    return str(detail_message)
 
 
 def ensure_required_fields(
@@ -369,38 +454,87 @@ def save_json(out_dir: str, filename: str, payload: Any) -> None:
     print(f"Saved: {path}")
 
 
-def display_table(data: List[List[Any]], headers: List[str], title: str = "") -> None:
-    """
-    Display data in a formatted table.
-    Uses tabulate if available; otherwise falls back to basic formatting.
-    """
+def save_text(out_dir: str, filename: str, content: str) -> None:
+    ensure_out_dir(out_dir)
+    path = os.path.join(out_dir, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content.rstrip() + "\n")
+    print(f"Saved: {path}")
+
+
+def render_ascii_grid(rows: List[List[Any]], headers: List[str]) -> str:
+    prepared_headers = ["" if h is None else str(h) for h in headers]
+    prepared_rows = [
+        ["" if cell is None else str(cell) for cell in row]
+        for row in rows
+    ]
+
+    def split_lines(value: str) -> List[str]:
+        lines = value.splitlines()
+        return lines if lines else [""]
+
+    widths = [0] * len(prepared_headers)
+
+    for idx, header in enumerate(prepared_headers):
+        widths[idx] = max(widths[idx], max(len(line) for line in split_lines(header)))
+
+    for row in prepared_rows:
+        for idx, cell in enumerate(row):
+            widths[idx] = max(widths[idx], max(len(line) for line in split_lines(cell)))
+
+    def border(fill: str) -> str:
+        return "+" + "+".join((fill * (width + 2)) for width in widths) + "+"
+
+    def render_row_multiline(row: List[str]) -> List[str]:
+        split_row = [split_lines(cell) for cell in row]
+        height = max(len(cell_lines) for cell_lines in split_row)
+        rendered_lines: List[str] = []
+
+        for line_index in range(height):
+            parts = []
+            for col_index, cell_lines in enumerate(split_row):
+                value = cell_lines[line_index] if line_index < len(cell_lines) else ""
+                parts.append(" " + value.ljust(widths[col_index]) + " ")
+            rendered_lines.append("|" + "|".join(parts) + "|")
+
+        return rendered_lines
+
+    lines: List[str] = [border("-")]
+    lines.extend(render_row_multiline(prepared_headers))
+    lines.append(border("="))
+
+    for row in prepared_rows:
+        lines.extend(render_row_multiline(row))
+        lines.append(border("-"))
+
+    return "\n".join(lines)
+
+
+def render_table(data: List[List[Any]], headers: List[str], title: str = "") -> str:
+    lines: List[str] = []
+
     if title:
-        print("\n" + "=" * 155)
-        print(title)
-        print("=" * 155)
+        lines.append("=" * 155)
+        lines.append(title)
+        lines.append("=" * 155)
 
     if not data:
-        print("(no data)")
-        return
+        lines.append("(no data)")
+        return "\n".join(lines)
 
     str_rows = [[("" if cell is None else str(cell)) for cell in row] for row in data]
 
     if tabulate:
-        print(tabulate(str_rows, headers=headers, tablefmt="grid"))
-        return
+        table_text = tabulate(str_rows, headers=headers, tablefmt="grid")
+    else:
+        table_text = render_ascii_grid(str_rows, headers)
 
-    widths = [len(str(h)) for h in headers]
-    for row in str_rows:
-        for idx, cell in enumerate(row):
-            widths[idx] = max(widths[idx], len(cell))
+    lines.append(table_text)
+    return "\n".join(lines)
 
-    def fmt_row(row: List[str]) -> str:
-        return " | ".join(cell.ljust(widths[idx]) for idx, cell in enumerate(row))
 
-    print(fmt_row(headers))
-    print("-+-".join("-" * width for width in widths))
-    for row in str_rows:
-        print(fmt_row(row))
+def print_report(report_text: str) -> None:
+    print(report_text)
 
 
 def paged_get_items(
@@ -447,8 +581,39 @@ def paged_get_items(
     return all_items, last_resp
 
 
+def enrich_alerts_with_detail_messages(alerts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Populate detailMessage by doing a per-alert lookup.
+    Used when object-specific mode requests --need-message.
+    """
+    enriched: List[Dict[str, Any]] = []
+
+    for alert in alerts:
+        alert_id = alert.get("id")
+        if not alert_id:
+            enriched.append(alert)
+            continue
+
+        try:
+            detailed_alert = get_alert_by_id(
+                alert_id=str(alert_id),
+                need_message=True,
+                fields="detailMessage",
+            )
+            merged = dict(alert)
+            if isinstance(detailed_alert, dict):
+                merged.update(detailed_alert)
+            enriched.append(merged)
+        except LMAPIError:
+            enriched.append(alert)
+
+    return enriched
+
+
 def format_alert_rows(
-    alerts: List[Dict[str, Any]], limit: int = DEFAULT_PREVIEW_LIMIT
+    alerts: List[Dict[str, Any]],
+    limit: int = DEFAULT_PREVIEW_LIMIT,
+    include_full_message_in_table: bool = False,
 ) -> List[List[Any]]:
     rows: List[List[Any]] = []
     for alert in alerts[:limit]:
@@ -467,12 +632,20 @@ def format_alert_rows(
                 alert_sdt_value(alert),
                 alert.get("cleared"),
                 alert.get("acked"),
+                message_value_for_table(
+                    alert.get("detailMessage"),
+                    include_full_body=include_full_message_in_table,
+                ),
             ]
         )
     return rows
 
 
-def print_alert_preview(alerts: List[Dict[str, Any]], title: str) -> None:
+def build_alert_preview_report(
+    alerts: List[Dict[str, Any]],
+    title: str,
+    include_full_message_in_table: bool = False,
+) -> str:
     headers = [
         "Alert ID",
         "Object",
@@ -486,15 +659,33 @@ def print_alert_preview(alerts: List[Dict[str, Any]], title: str) -> None:
         "SDT",
         "Cleared",
         "Acked",
+        "Message",
     ]
-    display_table(format_alert_rows(alerts), headers, title)
+
+    report_text = render_table(
+        format_alert_rows(
+            alerts,
+            include_full_message_in_table=include_full_message_in_table,
+        ),
+        headers,
+        title,
+    )
 
     if len(alerts) > DEFAULT_PREVIEW_LIMIT:
-        print(f"\nShowing first {DEFAULT_PREVIEW_LIMIT} of {len(alerts)} alerts.")
+        report_text += (
+            f"\n\nShowing first {DEFAULT_PREVIEW_LIMIT} of {len(alerts)} alerts."
+        )
+
+    return report_text
 
 
-def print_single_alert(alert: Dict[str, Any]) -> None:
+def build_single_alert_report(
+    alert: Dict[str, Any],
+    include_full_message_in_table: bool = False,
+    include_detail_section: bool = True,
+) -> str:
     start_epoch = alert.get("startEpoch")
+    detail_message = alert.get("detailMessage")
 
     summary_rows = [
         ["Alert ID", alert.get("id")],
@@ -513,17 +704,23 @@ def print_single_alert(alert: Dict[str, Any]) -> None:
         ["Acked By", alert.get("ackedBy")],
         ["Rule", alert.get("rule")],
         ["Chain", alert.get("chain")],
+        [
+            "Message",
+            message_value_for_table(
+                detail_message,
+                include_full_body=include_full_message_in_table,
+            ),
+        ],
     ]
 
-    display_table(summary_rows, ["Field", "Value"], "Alert Summary")
+    report_text = render_table(summary_rows, ["Field", "Value"], "Alert Summary")
 
-    detail_message = alert.get("detailMessage")
-    if detail_message is not None:
-        print("\nDetail Message:")
-        if isinstance(detail_message, (dict, list)):
-            print(json.dumps(detail_message, indent=2, ensure_ascii=False))
-        else:
-            print(detail_message)
+    if include_detail_section:
+        pretty_message = pretty_message_value(detail_message)
+        if pretty_message:
+            report_text += f"\n\nDetail Message:\n{pretty_message}"
+
+    return report_text
 
 
 def get_alerts_accountwide(
@@ -544,41 +741,30 @@ def get_alerts_accountwide(
     return alerts
 
 
-def get_alerts_for_device(
-    device_id: int,
+def get_alerts_for_object_name(
+    object_name: str,
     lm_filter: Optional[str] = None,
     fields: Optional[str] = None,
-    custom_columns: Optional[str] = None,
     need_message: bool = False,
-    bound: str = "instances",
     page_size: int = DEFAULT_PAGE_SIZE,
-    start: Optional[int] = None,
-    end: Optional[int] = None,
+    days_ago: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Capture alerts for a specific device.
+    Capture alerts for a specific monitorObjectName.
+    This uses account-wide alerts and filters client-side by monitorObjectName.
     """
-    params: Dict[str, Any] = {
-        "needMessage": str(need_message).lower(),
-        "bound": bound,
-    }
-
-    if lm_filter:
-        params["filter"] = lm_filter
-    if fields:
-        params["fields"] = ensure_required_fields(fields, PREVIEW_REQUIRED_FIELDS)
-    if custom_columns:
-        params["customColumns"] = custom_columns
-    if start is not None:
-        params["start"] = start
-    if end is not None:
-        params["end"] = end
-
-    alerts, _ = paged_get_items(
-        f"/device/devices/{device_id}/alerts",
-        base_params=params,
+    alerts = get_alerts_accountwide(
+        lm_filter=lm_filter,
+        fields=fields,
         page_size=page_size,
     )
+
+    alerts = filter_alerts_by_object_name(alerts, object_name)
+    alerts = filter_alerts_since_days(alerts, days_ago)
+
+    if need_message and alerts:
+        alerts = enrich_alerts_with_detail_messages(alerts)
+
     return alerts
 
 
@@ -614,33 +800,36 @@ def build_parser() -> argparse.ArgumentParser:
     python Get-LMAlerts_v2.py --help
 
   Account-wide alerts:
-    python Get-LMAlerts_v2.py account
-    python Get-LMAlerts_v2.py account --filter "cleared:false"
-    python Get-LMAlerts_v2.py account --fields "id,severity,monitorObjectName"
-    python Get-LMAlerts_v2.py account --days-ago 1
-    python Get-LMAlerts_v2.py account --days-ago 7 --filter "cleared:false"
-    python Get-LMAlerts_v2.py account --days-ago 14 --page-size 500
+    python3 Get-LMAlerts_v2.py account
+    python3 Get-LMAlerts_v2.py account --filter "cleared:false"
+    python3 Get-LMAlerts_v2.py account --fields "id,severity,monitorObjectName"
+    python3 Get-LMAlerts_v2.py account --days-ago 1
+    python3 Get-LMAlerts_v2.py account --days-ago 7 --filter "cleared:false"
+    python3 Get-LMAlerts_v2.py account --save-table
 
-  Alerts for a specific device:
-    python Get-LMAlerts_v2.py device --device-id 123
-    python Get-LMAlerts_v2.py device --device-id 123 --need-message
-    python Get-LMAlerts_v2.py device --device-id 123 --filter "severity:>=3"
-    python Get-LMAlerts_v2.py device --device-id 123 --days-ago 7
-    python Get-LMAlerts_v2.py device --device-id 123 --days-ago 14 --need-message
-    python Get-LMAlerts_v2.py device --device-id 123 --start 1773581054 --end 1773667454
-    python Get-LMAlerts_v2.py device --device-id 123 --fields "id,severity,startEpoch" --custom-columns "alertValue"
+  Alerts for a specific object name:
+    python3 Get-LMAlerts_v2.py object --object-name "HP-Printer"
+    python3 Get-LMAlerts_v2.py object --object-name "HP-Printer" --need-message
+    python3 Get-LMAlerts_v2.py object --object-name "HP-Printer" --days-ago 7
+    python3 Get-LMAlerts_v2.py object --object-name "HP-Printer" --days-ago 14 --need-message --save-table
+    python3 Get-LMAlerts_v2.py object --object-name "HP-Printer" --filter "severity:>=3"
 
   Single alert by ID:
-    python Get-LMAlerts_v2.py alert --alert-id A1B2C3D4
-    python Get-LMAlerts_v2.py alert --alert-id A1B2C3D4 --need-message
-    python Get-LMAlerts_v2.py alert --alert-id A1B2C3D4 --fields "id,severity,detailMessage"
+    python3 Get-LMAlerts_v2.py alert --alert-id DS267
+    python3 Get-LMAlerts_v2.py alert --alert-id DS267 --need-message
+    python3 Get-LMAlerts_v2.py alert --alert-id DS267 --need-message --save-table
 
 Notes:
   --days-ago means "alerts since N days ago"
-  For device mode, explicit --start takes precedence over --days-ago
   Date is shown in Australia/Sydney
   Duration is computed from startEpoch/endEpoch, or startEpoch-to-now for active alerts
-  Output JSON is saved under ./output by default
+  Message is populated when detailMessage is returned by the API
+  Object matching uses monitorObjectName and is case-insensitive exact match
+  In object mode, --need-message performs one extra alert lookup per matched alert
+  --save-table writes the displayed ASCII report to a .text file in the output directory
+  When --save-table is used, the saved table includes the full message body when available
+  Saved table output does not append a separate Detail Message section
+  JSON output is still saved under ./output by default
 """
 
     parser = argparse.ArgumentParser(
@@ -654,10 +843,8 @@ Notes:
     account_examples = """Examples:
   python Get-LMAlerts_v2.py account
   python Get-LMAlerts_v2.py account --filter "cleared:false"
-  python Get-LMAlerts_v2.py account --fields "id,severity,monitorObjectName"
-  python Get-LMAlerts_v2.py account --days-ago 1
-  python Get-LMAlerts_v2.py account --days-ago 7 --filter "cleared:false"
-  python Get-LMAlerts_v2.py account --output-dir output
+  python Get-LMAlerts_v2.py account --days-ago 7
+  python Get-LMAlerts_v2.py account --save-table
 """
 
     account_parser = subparsers.add_parser(
@@ -688,90 +875,77 @@ Notes:
         help=f"Page size for paginated requests (default: {DEFAULT_PAGE_SIZE})",
     )
     account_parser.add_argument(
+        "--save-table",
+        action="store_true",
+        help="Save the displayed ASCII table/report to a .text file",
+    )
+    account_parser.add_argument(
         "--output-dir",
         default=DEFAULT_OUT_DIR,
-        help=f"Directory to save JSON output (default: {DEFAULT_OUT_DIR})",
+        help=f"Directory to save output files (default: {DEFAULT_OUT_DIR})",
     )
 
-    device_examples = """Examples:
-  python Get-LMAlerts_v2.py device --device-id 123
-  python Get-LMAlerts_v2.py device --device-id 123 --need-message
-  python Get-LMAlerts_v2.py device --device-id 123 --filter "severity:>=3"
-  python Get-LMAlerts_v2.py device --device-id 123 --days-ago 7
-  python Get-LMAlerts_v2.py device --device-id 123 --days-ago 14 --need-message
-  python Get-LMAlerts_v2.py device --device-id 123 --start 1773581054 --end 1773667454
-  python Get-LMAlerts_v2.py device --device-id 123 --fields "id,severity,startEpoch"
-  python Get-LMAlerts_v2.py device --device-id 123 --custom-columns "alertValue"
+    object_examples = """Examples:
+  python Get-LMAlerts_v2.py object --object-name "HP-Printer"
+  python Get-LMAlerts_v2.py object --object-name "HP-Printer" --need-message
+  python Get-LMAlerts_v2.py object --object-name "HP-Printer" --days-ago 7
+  python Get-LMAlerts_v2.py object --object-name "HP-Printer" --days-ago 14 --need-message --save-table
 """
 
-    device_parser = subparsers.add_parser(
-        "device",
-        help="Capture alerts for a specific device",
-        description="Capture alerts for a specific device.",
-        epilog=device_examples,
+    object_parser = subparsers.add_parser(
+        "object",
+        aliases=["device"],
+        help="Capture alerts for a specific object name / monitorObjectName",
+        description="Capture alerts for a specific object name / monitorObjectName.",
+        epilog=object_examples,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    device_parser.add_argument(
-        "--device-id",
-        type=int,
+    object_parser.set_defaults(command="object")
+    object_parser.add_argument(
+        "--object-name",
         required=True,
-        help="Device ID",
+        help="Object name to match against monitorObjectName",
     )
-    device_parser.add_argument(
+    object_parser.add_argument(
         "--filter",
         dest="lm_filter",
         help="Optional LogicMonitor filter string",
     )
-    device_parser.add_argument(
+    object_parser.add_argument(
         "--fields",
         help="Optional fields list",
     )
-    device_parser.add_argument(
-        "--custom-columns",
-        help="Optional customColumns value",
-    )
-    device_parser.add_argument(
+    object_parser.add_argument(
         "--need-message",
         action="store_true",
-        help="Include alert detail message where supported",
+        help="Populate detail message by doing a per-alert lookup",
     )
-    device_parser.add_argument(
-        "--bound",
-        default="instances",
-        help='Bound value for device alerts (default: "instances")',
-    )
-    device_parser.add_argument(
-        "--start",
-        type=int,
-        help="Optional start epoch (seconds or milliseconds)",
-    )
-    device_parser.add_argument(
-        "--end",
-        type=int,
-        help="Optional end epoch (seconds or milliseconds)",
-    )
-    device_parser.add_argument(
+    object_parser.add_argument(
         "--days-ago",
         type=positive_int,
         help="Only show alerts from the last N days (examples: 1, 7, 14)",
     )
-    device_parser.add_argument(
+    object_parser.add_argument(
         "--page-size",
         type=int,
         default=DEFAULT_PAGE_SIZE,
         help=f"Page size for paginated requests (default: {DEFAULT_PAGE_SIZE})",
     )
-    device_parser.add_argument(
+    object_parser.add_argument(
+        "--save-table",
+        action="store_true",
+        help="Save the displayed ASCII table/report to a .text file",
+    )
+    object_parser.add_argument(
         "--output-dir",
         default=DEFAULT_OUT_DIR,
-        help=f"Directory to save JSON output (default: {DEFAULT_OUT_DIR})",
+        help=f"Directory to save output files (default: {DEFAULT_OUT_DIR})",
     )
 
     alert_examples = """Examples:
-  python Get-LMAlerts_v2.py alert --alert-id A1B2C3D4
-  python Get-LMAlerts_v2.py alert --alert-id A1B2C3D4 --need-message
-  python Get-LMAlerts_v2.py alert --alert-id A1B2C3D4 --fields "id,severity,detailMessage"
-  python Get-LMAlerts_v2.py alert --alert-id A1B2C3D4 --custom-columns "alertValue"
+  python Get-LMAlerts_v2.py alert --alert-id DS267
+  python Get-LMAlerts_v2.py alert --alert-id DS267 --need-message
+  python Get-LMAlerts_v2.py alert --alert-id DS267 --need-message --save-table
 """
 
     alert_parser = subparsers.add_parser(
@@ -800,9 +974,14 @@ Notes:
         help="Optional customColumns value",
     )
     alert_parser.add_argument(
+        "--save-table",
+        action="store_true",
+        help="Save the displayed ASCII table/report to a .text file",
+    )
+    alert_parser.add_argument(
         "--output-dir",
         default=DEFAULT_OUT_DIR,
-        help=f"Directory to save JSON output (default: {DEFAULT_OUT_DIR})",
+        help=f"Directory to save output files (default: {DEFAULT_OUT_DIR})",
     )
 
     return parser
@@ -830,61 +1009,92 @@ def main() -> int:
                 )
                 if args.days_ago:
                     title += f" - last {args.days_ago} day(s)"
-                print_alert_preview(alerts, title)
+                console_report = build_alert_preview_report(
+                    alerts,
+                    title,
+                    include_full_message_in_table=False,
+                )
+                file_report = build_alert_preview_report(
+                    alerts,
+                    title,
+                    include_full_message_in_table=True,
+                )
             else:
                 if args.days_ago:
-                    print(f"No alerts found in the last {args.days_ago} day(s).")
+                    console_report = f"No alerts found in the last {args.days_ago} day(s)."
                 else:
-                    print("No alerts found.")
+                    console_report = "No alerts found."
+                file_report = console_report
 
-            filename = "getAlerts_accountwide.json"
+            print_report(console_report)
+
+            if args.save_table:
+                text_filename = "getAlerts_accountwide.text"
+                if args.days_ago:
+                    text_filename = f"getAlerts_accountwide_{args.days_ago}d.text"
+                save_text(args.output_dir, text_filename, file_report)
+
+            json_filename = "getAlerts_accountwide.json"
             if args.days_ago:
-                filename = f"getAlerts_accountwide_{args.days_ago}d.json"
-
-            save_json(args.output_dir, filename, alerts)
+                json_filename = f"getAlerts_accountwide_{args.days_ago}d.json"
+            save_json(args.output_dir, json_filename, alerts)
             return 0
 
-        if args.command == "device":
-            effective_start = args.start
-            if effective_start is None and args.days_ago is not None:
-                effective_start = days_ago_to_epoch_seconds(args.days_ago)
-
-            alerts = get_alerts_for_device(
-                device_id=args.device_id,
+        if args.command == "object":
+            alerts = get_alerts_for_object_name(
+                object_name=args.object_name,
                 lm_filter=args.lm_filter,
                 fields=args.fields,
-                custom_columns=args.custom_columns,
                 need_message=args.need_message,
-                bound=args.bound,
                 page_size=args.page_size,
-                start=effective_start,
-                end=args.end,
+                days_ago=args.days_ago,
             )
-
-            alerts = filter_alerts_since_days(alerts, args.days_ago)
 
             if alerts:
                 title = (
-                    f"Device Alerts for {args.device_id} "
+                    f"Object Alerts for {args.object_name} "
                     f"(showing first {DEFAULT_PREVIEW_LIMIT} of {len(alerts)})"
                 )
                 if args.days_ago:
                     title += f" - last {args.days_ago} day(s)"
-                print_alert_preview(alerts, title)
+                console_report = build_alert_preview_report(
+                    alerts,
+                    title,
+                    include_full_message_in_table=False,
+                )
+                file_report = build_alert_preview_report(
+                    alerts,
+                    title,
+                    include_full_message_in_table=True,
+                )
             else:
                 if args.days_ago:
-                    print(
-                        f"No alerts found for device ID {args.device_id} "
+                    console_report = (
+                        f"No alerts found for object name {args.object_name} "
                         f"in the last {args.days_ago} day(s)."
                     )
                 else:
-                    print(f"No alerts found for device ID {args.device_id}.")
+                    console_report = (
+                        f"No alerts found for object name {args.object_name}."
+                    )
+                file_report = console_report
 
-            filename = f"getAlerts_device_{args.device_id}.json"
+            print_report(console_report)
+
+            object_slug = sanitize_filename(args.object_name)
+
+            if args.save_table:
+                text_filename = f"getAlerts_object_{object_slug}.text"
+                if args.days_ago:
+                    text_filename = (
+                        f"getAlerts_object_{object_slug}_{args.days_ago}d.text"
+                    )
+                save_text(args.output_dir, text_filename, file_report)
+
+            json_filename = f"getAlerts_object_{object_slug}.json"
             if args.days_ago:
-                filename = f"getAlerts_device_{args.device_id}_{args.days_ago}d.json"
-
-            save_json(args.output_dir, filename, alerts)
+                json_filename = f"getAlerts_object_{object_slug}_{args.days_ago}d.json"
+            save_json(args.output_dir, json_filename, alerts)
             return 0
 
         if args.command == "alert":
@@ -895,7 +1105,26 @@ def main() -> int:
                 custom_columns=args.custom_columns,
             )
 
-            print_single_alert(alert)
+            console_report = build_single_alert_report(
+                alert,
+                include_full_message_in_table=False,
+                include_detail_section=True,
+            )
+            file_report = build_single_alert_report(
+                alert,
+                include_full_message_in_table=True,
+                include_detail_section=False,
+            )
+
+            print_report(console_report)
+
+            if args.save_table:
+                save_text(
+                    args.output_dir,
+                    f"getAlert_{sanitize_filename(args.alert_id)}.text",
+                    file_report,
+                )
+
             save_json(
                 args.output_dir,
                 f"getAlert_{sanitize_filename(args.alert_id)}.json",
