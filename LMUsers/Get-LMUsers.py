@@ -19,10 +19,16 @@ Usage:
 - Show all users in a table:
     python3 Get-LMUsers.py --show-all
 
+- Show all users and export summary table to CSV:
+    python3 Get-LMUsers.py --show-all --csv output/users.csv
+
 - Get a specific user by ID:
     python3 Get-LMUsers.py --id 12
 
-- Export all users to individual files:
+- Get a specific user by ID and export all fields to CSV:
+    python3 Get-LMUsers.py --id 12 --csv output/user_12.csv
+
+- Export all users to individual JSON files:
     python3 Get-LMUsers.py --extract-all
 
 - Enable debug output:
@@ -31,6 +37,7 @@ Usage:
 
 import argparse
 import base64
+import csv
 import hashlib
 import hmac
 import json
@@ -144,6 +151,22 @@ def display_table(data: List[List], headers: List[str], title: str = "") -> None
     print(tabulate(data, headers=headers, tablefmt="grid"))
 
 
+def write_csv(filepath: str, headers: List[str], rows: List[List]) -> None:
+    """
+    Write rows to a CSV file.
+    """
+    output_dir = os.path.dirname(filepath)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    with open(filepath, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(headers)
+        writer.writerows(rows)
+
+    print(f"CSV exported: {filepath}")
+
+
 def extract_items_and_total(response: Dict) -> Tuple[List[Dict], Optional[int]]:
     """
     Support both top-level and nested pagination response formats.
@@ -250,7 +273,7 @@ def format_value(value) -> str:
     return str(value)
 
 
-def show_all_users() -> None:
+def show_all_users(csv_path: Optional[str] = None) -> None:
     """
     Fetch and display all users in a table.
     """
@@ -265,8 +288,11 @@ def show_all_users() -> None:
     headers = ["ID", "Username", "Email", "Status", "Note"]
     display_table(rows, headers, "LogicMonitor Users")
 
+    if csv_path:
+        write_csv(csv_path, headers, rows)
 
-def show_user_by_id(user_id: int) -> None:
+
+def show_user_by_id(user_id: int, csv_path: Optional[str] = None) -> None:
     """
     Fetch and display one user by ID with all fields.
     """
@@ -280,7 +306,11 @@ def show_user_by_id(user_id: int) -> None:
     for key in sorted(user.keys()):
         rows.append([key, format_value(user.get(key))])
 
-    display_table(rows, ["Field", "Value"], f"LogicMonitor User {user_id}")
+    headers = ["Field", "Value"]
+    display_table(rows, headers, f"LogicMonitor User {user_id}")
+
+    if csv_path:
+        write_csv(csv_path, headers, rows)
 
 
 def extract_all_users() -> None:
@@ -365,6 +395,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--csv",
+        type=str,
+        help="Export displayed table output to a CSV file. Use with --show-all or --id."
+    )
+
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug output and print API endpoints being called."
@@ -380,6 +416,10 @@ def parse_args() -> argparse.Namespace:
         parser.print_help()
         sys.exit(0)
 
+    if args.extract_all and args.csv:
+        print("Error: --csv cannot be used with --extract-all. Use --show-all or --id with --csv.")
+        sys.exit(1)
+
     return args
 
 
@@ -389,9 +429,9 @@ if __name__ == "__main__":
     validate_env()
 
     if args.show_all:
-        show_all_users()
+        show_all_users(args.csv)
     elif args.id is not None:
-        show_user_by_id(args.id)
+        show_user_by_id(args.id, args.csv)
     elif args.extract_all:
         extract_all_users()
 
