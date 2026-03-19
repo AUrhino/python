@@ -28,7 +28,7 @@ Files are exported to a specific folder.
 
 ## Requirements:
 - Python 3.8+
-- requests, tabulate, python-dotenv
+- requests, tabulate, python-dotenv, csv, typing, argparse
 
 
 ## Examples:
@@ -39,10 +39,16 @@ Files are exported to a specific folder.
 - Show all users in a table:
     python3 Get-LMUsers.py --show-all
 
+- Show all users and export summary table to CSV:
+    python3 Get-LMUsers.py --show-all --csv output/users.csv
+
 - Get a specific user by ID:
     python3 Get-LMUsers.py --id 12
 
-- Export all users to individual files:
+- Get a specific user by ID and export all fields to CSV:
+    python3 Get-LMUsers.py --id 12 --csv output/user_12.csv
+
+- Export all users to individual JSON files:
     python3 Get-LMUsers.py --extract-all
 
 - Enable debug output:
