@@ -12,6 +12,7 @@ For each matching config record it returns:
 - whether config data was found
 
 Optional features:
+- Filter datasource names with comma-separated values, wildcards, and exclusions
 - Filter instance names with comma-separated partial matches
 - Include selected device properties from:
   - customProperties
@@ -39,28 +40,52 @@ Examples:
     python3 Get-LMGroupConfigSources.py --group_id 12435
 
     # Lookup by full group path
-    python3 Get-LMGroupConfigSources.py --group_name "Australia/Stores/ACME/Store 1"
+    python3 Get-LMGroupConfigSources.py --group_name "Australia/Stores/Store 1"
+
+    # Filter datasource name exact match
+    python3 Get-LMGroupConfigSources.py --group_id 12435 --filterDS "SSH_Exec_Standard"
+
+    # Filter datasource name with wildcard
+    python3 Get-LMGroupConfigSources.py --group_id 12435 --filterDS "SSH*"
+
+    # Exclude a datasource name
+    python3 Get-LMGroupConfigSources.py --group_id 12435 --filterDS "!Cisco_IOS"
+
+    # Match a datasource name starting with a literal !
+    python3 Get-LMGroupConfigSources.py --group_id 12435 --filterDS "\\!Cisco_IOS"
+
+    # Include wildcard and exclude one datasource
+    python3 Get-LMGroupConfigSources.py --group_id 12435 --filterDS "SSH*,!Cisco_IOS"
 
     # Filter instance names using comma-separated partial matches
     python3 Get-LMGroupConfigSources.py --group_id 12435 --instance_name_filter "running, startup"
 
     # Same filter with group name
-    python3 Get-LMGroupConfigSources.py --group_name "Australia/Stores/ACME/ACT/Store 1" --instance_name_filter "running, startup"
+    python3 Get-LMGroupConfigSources.py --group_name "Australia/Stores/Stores/Store 1" --instance_name_filter "running, startup"
 
     # Include device properties
-    python3 Get-LMGroupConfigSources.py --group_id 12435 --include_properties "system.staticgroups,snmp.community"
+    python3 Get-LMGroupConfigSources.py --group_id 12435 --include_properties "system.staticgroup,snmp.community"
 
-    # Filter instance names and include device properties
-    python3 Get-LMGroupConfigSources.py --group_id 12435 --instance_name_filter "running, startup" --include_properties "system.staticgroups,snmp.community"
+    # Filter datasource, instance names and include device properties
+    python3 Get-LMGroupConfigSources.py --group_id 12435 --filterDS "SSH*" --instance_name_filter "running, startup" --include_properties "system.staticgroup,snmp.community"
 
     # Export results to CSV
     python3 Get-LMGroupConfigSources.py --group_id 12435 --csv output/configs.csv
 
-    # Export filtered results with included properties to CSV
-    python3 Get-LMGroupConfigSources.py --group_id 12435 --instance_name_filter "running, startup" --include_properties "system.staticgroups,snmp.community" --csv output/configs.csv
-
     # Enable debug output
     python3 Get-LMGroupConfigSources.py --group_id 12435 --debug
+
+Datasource filter behavior:
+    --filterDS "SSH_Exec_Standard"
+    --filterDS "SSH*"
+    --filterDS "!Cisco_IOS"
+    --filterDS "\\!Cisco_IOS"
+    --filterDS "SSH*,!Cisco_IOS"
+
+Rules:
+    - leading !  => exclude pattern
+    - leading \! => literal ! in the pattern
+    - * is supported as a wildcard
 
 Instance name filter behavior:
     --instance_name_filter "running, startup"
@@ -84,6 +109,7 @@ If a property is not found, the output cell is left blank.
 import argparse
 import base64
 import csv
+import fnmatch
 import hashlib
 import hmac
 import os
@@ -107,10 +133,10 @@ BASE_URL = f"https://{COMPANY}.logicmonitor.com/santaba/rest"
 DEBUG = False
 SESSION = requests.Session()
 
-SCRIPT_VERSION = "1.0.1"
+SCRIPT_VERSION = "1.0.2"
 SCRIPT_DATE    = "2026-03-29"
 SCRIPT_NAME    = "Get-LMGroupConfigSources.py"
-SCRIPT_AUTHOR  = "Community project written by Ryan Gillan."
+SCRIPT_AUTHOR  = "Community project written by Ryan Gillan"
 SCRIPT_URL     = "https://github.com/AUrhino/python/tree/main/LMConfigs"
 
 
@@ -423,42 +449,19 @@ def get_instance_config_items(device_id: int, device_datasource_id: int, instanc
 
 
 def parse_instance_name_filters(filter_text: Optional[str]) -> List[str]:
-    """
-    Parse a comma-separated filter string into lowercase substrings.
-
-    Example:
-        "running, startup" -> ["running", "startup"]
-    """
     if not filter_text:
         return []
-
     return [part.strip().lower() for part in filter_text.split(",") if part.strip()]
 
 
 def instance_name_matches(instance_name: str, filters: List[str]) -> bool:
-    """
-    Case-insensitive substring matching.
-
-    Example:
-        filters = ["running", "startup"]
-        "Running-Config" -> True
-        "Startup-Config" -> True
-        "Candidate-Config" -> False
-    """
     if not filters:
         return True
-
     candidate = (instance_name or "").lower()
     return any(filter_value in candidate for filter_value in filters)
 
 
 def parse_include_properties(include_properties_text: Optional[str]) -> List[str]:
-    """
-    Parse a comma-separated property list.
-
-    Example:
-        "system.staticgroup,snmp.community" -> ["system.staticgroup", "snmp.community"]
-    """
     if not include_properties_text:
         return []
 
@@ -475,6 +478,72 @@ def parse_include_properties(include_properties_text: Optional[str]) -> List[str
         props.append(value)
 
     return props
+
+
+def parse_ds_filters(filter_text: Optional[str]) -> Tuple[List[str], List[str]]:
+    """
+    Parse datasource filters into include and exclude pattern lists.
+
+    Rules:
+    - leading !  => exclude pattern
+    - leading \! => literal ! in the pattern
+    - * is supported as a wildcard
+
+    Examples:
+        "SSH_Exec_Standard" -> includes ["ssh_exec_standard"], excludes []
+        "SSH*" -> includes ["ssh*"], excludes []
+        "!Cisco_IOS" -> includes [], excludes ["cisco_ios"]
+        "\\!Cisco_IOS" -> includes ["!cisco_ios"], excludes []
+        "SSH*,!Cisco_IOS" -> includes ["ssh*"], excludes ["cisco_ios"]
+    """
+    include_patterns: List[str] = []
+    exclude_patterns: List[str] = []
+
+    if not filter_text:
+        return include_patterns, exclude_patterns
+
+    for raw_part in filter_text.split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+
+        if part.startswith("\\!"):
+            pattern = part[1:].strip()
+            if pattern:
+                include_patterns.append(pattern.lower())
+            continue
+
+        if part.startswith("!"):
+            pattern = part[1:].strip()
+            if pattern:
+                exclude_patterns.append(pattern.lower())
+            continue
+
+        include_patterns.append(part.lower())
+
+    return include_patterns, exclude_patterns
+
+
+def matches_pattern_case_insensitive(value: str, pattern: str) -> bool:
+    return fnmatch.fnmatch((value or "").lower(), pattern.lower())
+
+
+def datasource_name_matches(datasource_name: str, include_patterns: List[str], exclude_patterns: List[str]) -> bool:
+    """
+    Datasource filter logic:
+    - Excludes are applied first
+    - If includes exist, datasource must match at least one include
+    - If no includes exist, any datasource not excluded is allowed
+    """
+    candidate = (datasource_name or "").lower()
+
+    if any(matches_pattern_case_insensitive(candidate, pattern) for pattern in exclude_patterns):
+        return False
+
+    if include_patterns:
+        return any(matches_pattern_case_insensitive(candidate, pattern) for pattern in include_patterns)
+
+    return True
 
 
 def get_property_map_from_array(properties: Any) -> Dict[str, str]:
@@ -496,10 +565,6 @@ def get_property_map_from_array(properties: Any) -> Dict[str, str]:
 
 
 def ensure_device_property_sets(device: Dict) -> Dict:
-    """
-    Make sure the device dict contains the property arrays we want.
-    If they are missing from the group devices payload, retrieve the full device.
-    """
     required_keys = ["customProperties", "systemProperties", "autoProperties", "inheritedProperties"]
 
     if all(key in device for key in required_keys):
@@ -523,15 +588,6 @@ def ensure_device_property_sets(device: Dict) -> Dict:
 
 
 def get_device_property_value(device: Dict, property_name: str) -> str:
-    """
-    Lookup a property across:
-    - customProperties
-    - systemProperties
-    - autoProperties
-    - inheritedProperties
-
-    Returns the first match found, otherwise empty string.
-    """
     property_sets = [
         get_property_map_from_array(device.get("customProperties")),
         get_property_map_from_array(device.get("systemProperties")),
@@ -590,6 +646,8 @@ def write_csv(filepath: str, headers: List[str], rows: List[List]) -> None:
 def collect_group_config_data(
     group_id: int,
     group_name: str,
+    ds_include_patterns: List[str],
+    ds_exclude_patterns: List[str],
     instance_name_filters: List[str],
     included_properties: List[str]
 ) -> List[List]:
@@ -601,6 +659,9 @@ def collect_group_config_data(
         return rows
 
     print(f"\nFound {len(devices)} device(s) in group '{group_name}' (ID: {group_id})")
+    if ds_include_patterns or ds_exclude_patterns:
+        ds_filter_display = ds_include_patterns + [f"!{p}" for p in ds_exclude_patterns]
+        print(f"Datasource filter(s): {', '.join(ds_filter_display)}")
     if instance_name_filters:
         print(f"Instance name filter(s): {', '.join(instance_name_filters)}")
     if included_properties:
@@ -628,9 +689,16 @@ def collect_group_config_data(
             if isinstance(ds, dict) and ds.get("dataSourceType") == "CS"
         ]
 
-        debug_print(f"Found {len(cs_datasources)} ConfigSource datasource(s) on device {device_id}")
-
+        filtered_datasources = []
         for ds in cs_datasources:
+            datasource_name = ds.get("dataSourceName") or ds.get("dataSourceDisplayName") or ""
+            if datasource_name_matches(datasource_name, ds_include_patterns, ds_exclude_patterns):
+                filtered_datasources.append(ds)
+
+        debug_print(f"Found {len(cs_datasources)} ConfigSource datasource(s) on device {device_id}")
+        debug_print(f"Matched {len(filtered_datasources)} datasource(s) after datasource filtering on device {device_id}")
+
+        for ds in filtered_datasources:
             device_datasource_id = ds.get("id")
             datasource_name = ds.get("dataSourceName") or ds.get("dataSourceDisplayName") or ""
 
@@ -726,7 +794,13 @@ def parse_args() -> argparse.Namespace:
     group.add_argument(
         "--group_name",
         type=str,
-        help='LogicMonitor device group name or full path. Example: --group_name "Australia/Stores/ACME/Store 1"'
+        help='LogicMonitor device group name or full path. Example: --group_name "Australia/Stores/Stores/Store 1"'
+    )
+
+    parser.add_argument(
+        "--filterDS",
+        type=str,
+        help='Comma-separated datasource filters. Supports wildcard * and exclusion with !. Escape literal ! with \\!. Examples: --filterDS "SSH_Exec_Standard", --filterDS "SSH*,!Cisco_IOS", --filterDS "\\!Cisco_IOS"'
     )
 
     parser.add_argument(
@@ -775,12 +849,15 @@ def main() -> None:
 
     group_id = group.get("id")
     group_name = group.get("fullPath") or group.get("name") or str(group_id)
+    ds_include_patterns, ds_exclude_patterns = parse_ds_filters(args.filterDS)
     instance_name_filters = parse_instance_name_filters(args.instance_name_filter)
     included_properties = parse_include_properties(args.include_properties)
 
     rows = collect_group_config_data(
         group_id,
         group_name,
+        ds_include_patterns,
+        ds_exclude_patterns,
         instance_name_filters,
         included_properties
     )
