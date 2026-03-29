@@ -20,6 +20,7 @@ Optional features:
   - autoProperties
   - inheritedProperties
 - Show script version info
+- Basic retry/backoff handling for transient API errors and rate limits
 
 Requirements:
 - Python 3.x
@@ -50,6 +51,12 @@ Important implementation note:
     when called without pagination parameters. For that reason, this script
     generally prefers the unpaged endpoint first, then falls back to the
     paginated form when necessary.
+
+Rate limit / retry behavior:
+    - 429: retries with Retry-After header if present, otherwise exponential backoff
+    - 500/502/503/504: retries with exponential backoff
+    - request exceptions: retries with exponential backoff
+    - other non-200 responses: fail immediately
 
 Examples:
     # Show script version
@@ -152,11 +159,15 @@ BASE_URL = f"https://{COMPANY}.logicmonitor.com/santaba/rest"
 DEBUG = False
 SESSION = requests.Session()
 
-SCRIPT_VERSION = "1.0.2"
-SCRIPT_DATE    = "2026-03-29"
-SCRIPT_NAME    = "Get-LMGroupConfigSources.py"
-SCRIPT_AUTHOR  = "Community project written by Ryan Gillan"
-SCRIPT_URL     = "https://github.com/AUrhino/python/tree/main/LMConfigs"
+SCRIPT_VERSION = "1.0.3"
+SCRIPT_DATE = "2026-03-29"
+SCRIPT_NAME = "Get-LMGroupConfigSources.py"
+SCRIPT_AUTHOR = "Community project written by Ryan Gillan"
+SCRIPT_URL = "https://github.com/AUrhino/python/tree/main/LMConfigs"
+
+# Retry/backoff settings
+MAX_RETRIES = 5
+MAX_BACKOFF_SECONDS = 30
 
 
 def validate_env() -> None:
@@ -226,7 +237,30 @@ def generate_auth_headers(http_verb: str, resource_path: str, data: str = "") ->
     }
 
 
-def api_get(resource_path: str) -> Dict:
+def get_retry_delay(response: Optional[requests.Response], attempt: int) -> int:
+    """
+    Determine retry delay in seconds for retryable failures.
+
+    Rules:
+        - If HTTP 429 includes Retry-After and it is numeric, use it
+        - Otherwise use exponential backoff capped at MAX_BACKOFF_SECONDS
+
+    Args:
+        response: requests.Response if available, else None
+        attempt: Zero-based retry attempt number
+
+    Returns:
+        Delay in seconds
+    """
+    if response is not None and response.status_code == 429:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after and retry_after.isdigit():
+            return int(retry_after)
+
+    return min(2 ** attempt, MAX_BACKOFF_SECONDS)
+
+
+def api_get(resource_path: str, max_retries: int = MAX_RETRIES) -> Dict:
     """
     Perform a GET request against the LogicMonitor REST API.
 
@@ -234,9 +268,17 @@ def api_get(resource_path: str) -> Dict:
     - LMv1 auth header creation
     - JSON decoding
     - optional debug logging for response shape
+    - retry/backoff handling for transient failures and rate limits
+
+    Retry behavior:
+        - 429: honor Retry-After if present, otherwise exponential backoff
+        - 500/502/503/504: exponential backoff
+        - request exceptions: exponential backoff
+        - other non-200 responses: fail immediately
 
     Args:
         resource_path: REST path only, not the full portal URL.
+        max_retries: Maximum retry attempts for retryable responses.
 
     Returns:
         Parsed JSON dictionary on success.
@@ -245,39 +287,62 @@ def api_get(resource_path: str) -> Dict:
     url = BASE_URL + resource_path
     headers = generate_auth_headers("GET", resource_path)
 
-    debug_print(f"API endpoint: GET {resource_path}")
-    debug_print(f"Full URL: {url}")
+    for attempt in range(max_retries + 1):
+        debug_print(f"API endpoint: GET {resource_path}")
+        debug_print(f"Full URL: {url}")
+        debug_print(f"Attempt: {attempt + 1}/{max_retries + 1}")
 
-    try:
-        response = SESSION.get(url, headers=headers, timeout=30)
-    except requests.RequestException as exc:
-        print(f"Request failed: {exc}")
+        try:
+            response = SESSION.get(url, headers=headers, timeout=30)
+        except requests.RequestException as exc:
+            if attempt >= max_retries:
+                print(f"Request failed: {exc}")
+                return {}
+
+            sleep_seconds = get_retry_delay(None, attempt)
+            debug_print(f"Request exception: {exc}. Retrying in {sleep_seconds}s")
+            time.sleep(sleep_seconds)
+            continue
+
+        debug_print(f"Response status: {response.status_code}")
+
+        if response.status_code == 200:
+            try:
+                payload = response.json()
+                if isinstance(payload, dict):
+                    debug_print(f"Response keys: {list(payload.keys())}")
+                    if "data" in payload:
+                        data = payload.get("data")
+                        debug_print(f"Response data type: {type(data).__name__}")
+                        if isinstance(data, dict):
+                            debug_print(f"Response data keys: {list(data.keys())}")
+                            if "items" in data and isinstance(data.get("items"), list):
+                                debug_print(f"Response data items count: {len(data.get('items', []))}")
+                        elif isinstance(data, list):
+                            debug_print(f"Response data list count: {len(data)}")
+                    if "items" in payload and isinstance(payload.get("items"), list):
+                        debug_print(f"Top-level items count: {len(payload.get('items', []))}")
+                return payload
+            except ValueError:
+                print("Error: Response was not valid JSON.")
+                return {}
+
+        if response.status_code in (429, 500, 502, 503, 504):
+            if attempt >= max_retries:
+                print(f"Error after retries: {response.status_code} - {response.text}")
+                return {}
+
+            sleep_seconds = get_retry_delay(response, attempt)
+            debug_print(
+                f"Retryable response {response.status_code}. "
+                f"Sleeping {sleep_seconds}s before retry."
+            )
+            time.sleep(sleep_seconds)
+            continue
+
+        print(f"Error: {response.status_code} - {response.text}")
         return {}
 
-    debug_print(f"Response status: {response.status_code}")
-
-    if response.status_code == 200:
-        try:
-            payload = response.json()
-            if isinstance(payload, dict):
-                debug_print(f"Response keys: {list(payload.keys())}")
-                if "data" in payload:
-                    data = payload.get("data")
-                    debug_print(f"Response data type: {type(data).__name__}")
-                    if isinstance(data, dict):
-                        debug_print(f"Response data keys: {list(data.keys())}")
-                        if "items" in data and isinstance(data.get("items"), list):
-                            debug_print(f"Response data items count: {len(data.get('items', []))}")
-                    elif isinstance(data, list):
-                        debug_print(f"Response data list count: {len(data)}")
-                if "items" in payload and isinstance(payload.get("items"), list):
-                    debug_print(f"Top-level items count: {len(payload.get('items', []))}")
-            return payload
-        except ValueError:
-            print("Error: Response was not valid JSON.")
-            return {}
-
-    print(f"Error: {response.status_code} - {response.text}")
     return {}
 
 
