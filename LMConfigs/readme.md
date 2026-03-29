@@ -1,5 +1,6 @@
 # LogicMonitor API - Get LM details for Common Config backups
 This Python script uses the LogicMonitor API to show Common Configs
+This has been tested with Cisco equipment, adding other Common Config types is possiable.
 
 ---
 ## LogicMonitor API Credentials
@@ -34,9 +35,13 @@ This Python script uses the LogicMonitor API to show Common Configs
 ```
 - Show help:
     python3 Get-LMGroupConfigSources.py
+    python3 Get-LMGroupConfigSources.py --help
 
 - Enable debug output:
     python3 Get-LMGroupConfigSources.py --debug
+
+- Enable version:
+    python3 Get-LMGroupConfigSources.py --version
 
 - Lookup by group ID
     python3 Get-LMGroupConfigSources.py --group_id 12435
@@ -46,6 +51,9 @@ This Python script uses the LogicMonitor API to show Common Configs
 
 - Filter instance names using comma-separated partial matches
     python3 Get-LMGroupConfigSources.py --group_id 12435 --instance_name_filter "running, startup"
+
+- Filter instance names and include device properties (custom,system,inherited and auto properties)
+    python3 Get-LMGroupConfigSources.py --group_id 12435 --instance_name_filter "running, startup" --include_properties "system.staticgroups,snmp.community"
 
 - Same filter with group name
     python3 Get-LMGroupConfigSources.py --group_name "Australia/ACME/Store 1" --instance_name_filter "running, startup"
