@@ -11,6 +11,15 @@ For each matching config record it returns:
 - pollTimestamp (converted to local time)
 - whether config data was found
 
+Optional features:
+- Filter instance names with comma-separated partial matches
+- Include selected device properties from:
+  - customProperties
+  - systemProperties
+  - autoProperties
+  - inheritedProperties
+- Show script version info
+
 Requirements:
 - Python 3.x
 - requests
@@ -23,23 +32,32 @@ Environment variables (.env):
     COMPANY=your_company_name
 
 Examples:
+    # Show script version
+    python3 Get-LMGroupConfigSources.py --version
+
     # Lookup by group ID
     python3 Get-LMGroupConfigSources.py --group_id 12435
 
     # Lookup by full group path
-    python3 Get-LMGroupConfigSources.py --group_name "Australia/Stores/Big W/ACT/191-Canberra Airport"
+    python3 Get-LMGroupConfigSources.py --group_name "Australia/Stores/ACME/Store 1"
 
     # Filter instance names using comma-separated partial matches
     python3 Get-LMGroupConfigSources.py --group_id 12435 --instance_name_filter "running, startup"
 
     # Same filter with group name
-    python3 Get-LMGroupConfigSources.py --group_name "Australia/Stores/ACME/Store 1" --instance_name_filter "running, startup"
+    python3 Get-LMGroupConfigSources.py --group_name "Australia/Stores/ACME/ACT/Store 1" --instance_name_filter "running, startup"
+
+    # Include device properties
+    python3 Get-LMGroupConfigSources.py --group_id 12435 --include_properties "system.staticgroups,snmp.community"
+
+    # Filter instance names and include device properties
+    python3 Get-LMGroupConfigSources.py --group_id 12435 --instance_name_filter "running, startup" --include_properties "system.staticgroups,snmp.community"
 
     # Export results to CSV
     python3 Get-LMGroupConfigSources.py --group_id 12435 --csv output/configs.csv
 
-    # Export filtered results to CSV
-    python3 Get-LMGroupConfigSources.py --group_id 12435 --instance_name_filter "running, startup" --csv output/configs.csv
+    # Export filtered results with included properties to CSV
+    python3 Get-LMGroupConfigSources.py --group_id 12435 --instance_name_filter "running, startup" --include_properties "system.staticgroups,snmp.community" --csv output/configs.csv
 
     # Enable debug output
     python3 Get-LMGroupConfigSources.py --group_id 12435 --debug
@@ -50,6 +68,17 @@ Instance name filter behavior:
 This is a case-insensitive substring match:
     "running" -> matches "Running-Config"
     "startup" -> matches "Startup-Config"
+
+Included properties behavior:
+    --include_properties "system.staticgroup,snmp.community"
+
+For each requested property, the script checks these arrays on the device:
+    - customProperties
+    - systemProperties
+    - autoProperties
+    - inheritedProperties
+
+If a property is not found, the output cell is left blank.
 """
 
 import argparse
@@ -77,6 +106,12 @@ COMPANY = os.getenv("COMPANY")
 BASE_URL = f"https://{COMPANY}.logicmonitor.com/santaba/rest"
 DEBUG = False
 SESSION = requests.Session()
+
+SCRIPT_VERSION = "1.0.1"
+SCRIPT_DATE    = "2026-03-29"
+SCRIPT_NAME    = "Get-LMGroupConfigSources.py"
+SCRIPT_AUTHOR  = "Community project written by Ryan Gillan."
+SCRIPT_URL     = "https://github.com/AUrhino/python/tree/main/LMConfigs"
 
 
 def validate_env() -> None:
@@ -244,6 +279,19 @@ def get_group_by_id(group_id: int) -> Dict:
     return {}
 
 
+def get_device_by_id(device_id: int) -> Dict:
+    response = api_get(f"/device/devices/{device_id}")
+
+    if isinstance(response, dict) and response.get("id") is not None:
+        return response
+
+    data = response.get("data", {})
+    if isinstance(data, dict) and data.get("id") is not None:
+        return data
+
+    return {}
+
+
 def normalize_group_value(value: Optional[str]) -> str:
     if not value:
         return ""
@@ -384,8 +432,7 @@ def parse_instance_name_filters(filter_text: Optional[str]) -> List[str]:
     if not filter_text:
         return []
 
-    filters = [part.strip().lower() for part in filter_text.split(",") if part.strip()]
-    return filters
+    return [part.strip().lower() for part in filter_text.split(",") if part.strip()]
 
 
 def instance_name_matches(instance_name: str, filters: List[str]) -> bool:
@@ -403,6 +450,100 @@ def instance_name_matches(instance_name: str, filters: List[str]) -> bool:
 
     candidate = (instance_name or "").lower()
     return any(filter_value in candidate for filter_value in filters)
+
+
+def parse_include_properties(include_properties_text: Optional[str]) -> List[str]:
+    """
+    Parse a comma-separated property list.
+
+    Example:
+        "system.staticgroup,snmp.community" -> ["system.staticgroup", "snmp.community"]
+    """
+    if not include_properties_text:
+        return []
+
+    props = []
+    seen = set()
+
+    for part in include_properties_text.split(","):
+        value = part.strip()
+        if not value:
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        props.append(value)
+
+    return props
+
+
+def get_property_map_from_array(properties: Any) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+
+    if not isinstance(properties, list):
+        return result
+
+    for item in properties:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        value = item.get("value")
+        if name is None:
+            continue
+        result[str(name)] = "" if value is None else str(value)
+
+    return result
+
+
+def ensure_device_property_sets(device: Dict) -> Dict:
+    """
+    Make sure the device dict contains the property arrays we want.
+    If they are missing from the group devices payload, retrieve the full device.
+    """
+    required_keys = ["customProperties", "systemProperties", "autoProperties", "inheritedProperties"]
+
+    if all(key in device for key in required_keys):
+        return device
+
+    device_id = device.get("id")
+    if device_id is None:
+        return device
+
+    debug_print(f"Device {device_id} missing one or more property arrays. Fetching full device details.")
+    full_device = get_device_by_id(device_id)
+    if not full_device:
+        return device
+
+    merged = dict(device)
+    for key in required_keys:
+        if key in full_device:
+            merged[key] = full_device.get(key)
+
+    return merged
+
+
+def get_device_property_value(device: Dict, property_name: str) -> str:
+    """
+    Lookup a property across:
+    - customProperties
+    - systemProperties
+    - autoProperties
+    - inheritedProperties
+
+    Returns the first match found, otherwise empty string.
+    """
+    property_sets = [
+        get_property_map_from_array(device.get("customProperties")),
+        get_property_map_from_array(device.get("systemProperties")),
+        get_property_map_from_array(device.get("autoProperties")),
+        get_property_map_from_array(device.get("inheritedProperties")),
+    ]
+
+    for prop_map in property_sets:
+        if property_name in prop_map:
+            return prop_map[property_name]
+
+    return ""
 
 
 def epoch_ms_to_local_string(epoch_ms: Optional[int]) -> str:
@@ -427,9 +568,9 @@ def format_config_found(config_value: Any) -> str:
 
 def display_table(data: List[List], headers: List[str], title: str = "") -> None:
     if title:
-        print("\n" + "=" * 120)
+        print("\n" + "=" * 140)
         print(title)
-        print("=" * 120)
+        print("=" * 140)
     print(tabulate(data, headers=headers, tablefmt="grid"))
 
 
@@ -446,7 +587,12 @@ def write_csv(filepath: str, headers: List[str], rows: List[List]) -> None:
     print(f"CSV exported: {filepath}")
 
 
-def collect_group_config_data(group_id: int, group_name: str, instance_name_filters: List[str]) -> List[List]:
+def collect_group_config_data(
+    group_id: int,
+    group_name: str,
+    instance_name_filters: List[str],
+    included_properties: List[str]
+) -> List[List]:
     rows: List[List] = []
 
     devices = get_devices_in_group(group_id)
@@ -457,16 +603,22 @@ def collect_group_config_data(group_id: int, group_name: str, instance_name_filt
     print(f"\nFound {len(devices)} device(s) in group '{group_name}' (ID: {group_id})")
     if instance_name_filters:
         print(f"Instance name filter(s): {', '.join(instance_name_filters)}")
+    if included_properties:
+        print(f"Included propertie(s): {', '.join(included_properties)}")
 
     for device in devices:
         if not isinstance(device, dict):
             continue
+
+        device = ensure_device_property_sets(device)
 
         device_id = device.get("id")
         device_display_name = device.get("displayName") or device.get("name") or str(device_id)
 
         if device_id is None:
             continue
+
+        property_values = [get_device_property_value(device, prop_name) for prop_name in included_properties]
 
         debug_print(f"Processing device {device_display_name} ({device_id})")
 
@@ -513,7 +665,7 @@ def collect_group_config_data(group_id: int, group_name: str, instance_name_filt
                 items, total = get_instance_config_items(device_id, device_datasource_id, instance_id)
 
                 if not items:
-                    rows.append([
+                    base_row = [
                         group_id,
                         group_name,
                         device_id,
@@ -526,7 +678,8 @@ def collect_group_config_data(group_id: int, group_name: str, instance_name_filt
                         "",
                         "",
                         ""
-                    ])
+                    ]
+                    rows.append(base_row + property_values)
                     continue
 
                 for item in items:
@@ -534,7 +687,7 @@ def collect_group_config_data(group_id: int, group_name: str, instance_name_filt
                     poll_timestamp = item.get("pollTimestamp")
                     config_found = format_config_found(item.get("config"))
 
-                    rows.append([
+                    base_row = [
                         group_id,
                         group_name,
                         device_id,
@@ -547,7 +700,8 @@ def collect_group_config_data(group_id: int, group_name: str, instance_name_filt
                         version,
                         epoch_ms_to_local_string(poll_timestamp),
                         config_found
-                    ])
+                    ]
+                    rows.append(base_row + property_values)
 
     return rows
 
@@ -555,6 +709,12 @@ def collect_group_config_data(group_id: int, group_name: str, instance_name_filt
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Retrieve ConfigSource config data for devices in a LogicMonitor group."
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"{SCRIPT_VERSION} | {SCRIPT_NAME} | {SCRIPT_DATE} | {SCRIPT_AUTHOR} | {SCRIPT_URL}"
     )
 
     group = parser.add_mutually_exclusive_group(required=True)
@@ -566,13 +726,19 @@ def parse_args() -> argparse.Namespace:
     group.add_argument(
         "--group_name",
         type=str,
-        help='LogicMonitor device group name or full path. Example: --group_name "Australia/Stores/Big W/ACT/191-Canberra Airport"'
+        help='LogicMonitor device group name or full path. Example: --group_name "Australia/Stores/ACME/Store 1"'
     )
 
     parser.add_argument(
         "--instance_name_filter",
         type=str,
         help='Comma-separated instance name filters. Example: --instance_name_filter "running, startup"'
+    )
+
+    parser.add_argument(
+        "--include_properties",
+        type=str,
+        help='Comma-separated device properties to include. Example: --include_properties "system.staticgroup,snmp.community"'
     )
 
     parser.add_argument(
@@ -610,8 +776,14 @@ def main() -> None:
     group_id = group.get("id")
     group_name = group.get("fullPath") or group.get("name") or str(group_id)
     instance_name_filters = parse_instance_name_filters(args.instance_name_filter)
+    included_properties = parse_include_properties(args.include_properties)
 
-    rows = collect_group_config_data(group_id, group_name, instance_name_filters)
+    rows = collect_group_config_data(
+        group_id,
+        group_name,
+        instance_name_filters,
+        included_properties
+    )
 
     if not rows:
         print("\nNo ConfigSource config data found.")
@@ -630,7 +802,7 @@ def main() -> None:
         "Version",
         "Poll Timestamp (Local)",
         "Config Status"
-    ]
+    ] + included_properties
 
     display_table(rows, headers, "LogicMonitor ConfigSource Config Data")
 
