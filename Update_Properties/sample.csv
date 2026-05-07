@@ -1,0 +1,3 @@
+deviceId,properties
+123,"key:value,key2:value2"
+456,"location:Sydney,owner:Ryan,environment:prod"
