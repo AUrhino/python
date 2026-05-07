@@ -10,6 +10,32 @@ Behavior in the script:
 - ```POST /device/devices/{deviceId}/properties```
 - It does not remove any existing properties that are not in the CSV.
 - It skips system.* and auto.* properties because those are not normal custom properties.
+
+## Example:
+
+Existing device properties:
+```
+location = Brisbane
+owner = NetworkTeam
+serial = ABC123
+```
+
+CSV:
+```
+deviceId,properties
+123,"location:Sydney,environment:prod"
+```
+
+Result:
+```
+location = Sydney       # updated/replaced
+owner = NetworkTeam     # unchanged
+serial = ABC123         # unchanged
+environment = prod      # added
+```
+
+NOTE: If the device is inheriting a property from a group, setting the same property on the device creates/updates the device level custom property, effectively overriding the inherited value for that device.
+
 ---
 ## LogicMonitor API Credentials
 - `ACCESS_ID`
