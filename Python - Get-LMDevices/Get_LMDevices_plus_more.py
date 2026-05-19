@@ -6,7 +6,7 @@ and optionally allows the user to fetch associated DataSources and their instanc
 
 Requirements:
 - Python 3.x
-- requests, tabulate, python-dotenv, re
+- requests, tabulate, python-dotenv
 - .env file with:
 ACCESS_ID=your_access_id
 ACCESS_KEY=your_access_key
@@ -18,12 +18,14 @@ python Get_LMDevices_plus_more.py --autoproperties true --systemproperties true
 python Get_LMDevices_plus_more.py --customproperties true --showsecrets
 python Get_LMDevices_plus_more.py --group 123 --autoproperties true --systemproperties true --debug
 python Get_LMDevices_plus_more.py --group "Production/Linux Servers"
+python Get_LMDevices_plus_more.py --customproperties true --csv ./output/devices.csv
 python Get_LMDevices_plus_more.py --autoproperties true --customproperties true --inheritedproperties true --systemproperties true
 
 Author: Ryan Gillan
 """
 
 import argparse
+import csv
 import os
 import sys
 import time
@@ -34,6 +36,7 @@ import json
 import re
 import requests
 from dotenv import load_dotenv
+from pathlib import Path
 from tabulate import tabulate
 
 # Load environment variables
@@ -162,6 +165,17 @@ def parse_args():
             "Raw JSON exports are not masked."
         ),
     )
+    parser.add_argument(
+        "--csv",
+        "--export-csv",
+        dest="csv_path",
+        default=None,
+        metavar="CSV_PATH",
+        help=(
+            "Export the displayed devices table to a CSV file. Accepts a full file path, "
+            "relative file path, or directory. If a directory is provided, logicmonitor_devices.csv is created there."
+        ),
+    )
     if len(sys.argv) == 1:
         parser.print_help()
         sys.exit(0)
@@ -231,6 +245,39 @@ def display_table(data: list, headers: list, title: str = ""):
         print(title)
         print("=" * 50)
     print(tabulate(data, headers=headers, tablefmt="grid"))
+
+
+def resolve_csv_output_path(csv_path: str) -> Path:
+    """
+    Resolve a user-provided CSV path.
+
+    If the provided path points to an existing directory, or appears to be a directory
+    because it has no file suffix, create logicmonitor_devices.csv inside that directory.
+    """
+    path = Path(csv_path).expanduser()
+
+    if path.exists() and path.is_dir():
+        return path / "logicmonitor_devices.csv"
+
+    if not path.suffix:
+        return path / "logicmonitor_devices.csv"
+
+    return path
+
+
+def export_table_to_csv(headers: list, rows: list, csv_path: str):
+    """
+    Export the displayed device table rows to a CSV file.
+    """
+    output_path = resolve_csv_output_path(csv_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with output_path.open("w", newline="", encoding="utf-8-sig") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(headers)
+        writer.writerows(rows)
+
+    print(f"Saved device table CSV to {output_path}")
 
 
 def fetch_paginated_items(
@@ -593,6 +640,7 @@ def get_devices(
     device_group: str = None,
     debug: bool = False,
     show_secrets: bool = False,
+    csv_path: str = None,
 ):
     """
     Fetch and display devices.
@@ -716,6 +764,9 @@ def get_devices(
     title = f"LogicMonitor Devices - Group: {group_label}" if group_label else "LogicMonitor Devices"
     display_table(table_data, headers, title)
 
+    if csv_path:
+        export_table_to_csv(headers, table_data, csv_path)
+
     if property_table_columns:
         print(f"Added {len(property_table_columns)} requested property column(s) to the device table.")
 
@@ -822,6 +873,7 @@ if __name__ == "__main__":
         device_group=args.device_group,
         debug=args.debug,
         show_secrets=args.show_secrets,
+        csv_path=args.csv_path,
     )
 
     if devices and input("\nWould you like to capture datasources and instances for a device? (y/n): ").lower() == "y":
