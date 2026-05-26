@@ -45,9 +45,40 @@ Covered module types (API v3 endpoints):
 
 ## Examples:
 ```
-   python export_modules.py --types datasources eventsources --out output
-   python export_modules.py --types all --out output --size 200 --sleep 0.2
-   python export_modules.py --types datasources --filter 'name~"CPU"' --out output
+  Show help and examples:
+    python export_modules.py
+    python export_modules.py --help
+
+  Export all module types:
+    python export_modules.py --types all --out output_modules
+
+  Export only DataSources and EventSources:
+    python export_modules.py --types datasources eventsources --out output_modules
+
+  Export DataSources matching a name filter:
+    python export_modules.py --types datasources --filter 'name~"CPU"' --out output_modules
+
+  Export all module types with larger page size and page pacing:
+    python export_modules.py --types all --out output_modules --size 200 --sleep 0.2
+
+  Export only AppliesTo Functions:
+    python export_modules.py --types appliestofunctions --out output_modules
+
+  Export only SNMP SysOID maps:
+    python export_modules.py --types oids --out output_modules
+
+  Export PropertySources:
+    python export_modules.py --types propertysources --out output_modules
+
+  Export PropertySources using the API endpoint alias:
+    python export_modules.py --types propertyrules --out output_modules
+
+  Debug PropertySources request URLs:
+    python export_modules.py --types propertysources --out output_modules --debug
+
+Valid module types:
+  datasources, eventsources, logsources, configsources, propertysources, topologysources, jobmonitors, appliestofunctions, oids
+  all
 ```
 ## Notes:
 - Adds retry (3 attempts) for transient errors and continues on module-type failure.
