@@ -13,6 +13,7 @@ Covered module types (API v3 endpoints):
 - JobMonitors        : /setting/batchjobs
 - AppliesToFunctions : /setting/functions
 - OIDs (SNMP SysOID) : /setting/oids
+- DiagnosticSources  : /setting/diagnosticsources
 
 Requirements:
 - Python 3.8+
@@ -30,6 +31,8 @@ Usage examples:
   python export_modules.py --types all --out output --size 200 --sleep 0.2
   python export_modules.py --types datasources --filter 'name~"CPU"' --out output
   python export_modules.py --types propertysources --out output --debug
+  python export_modules.py --types diagnosticsources --out output
+  python export_modules.py --types exchangeDiagnosticSources --out output
 
 Notes:
 - Running without arguments prints help and exits.
@@ -40,12 +43,15 @@ Notes:
 - Per-item files are named without the LogicModule ID.
 - If duplicate module names exist in the same module type, files are safely numbered.
 - PropertySources use the /setting/propertyrules endpoint.
+- DiagnosticSources use the /setting/diagnosticsources endpoint.
+- Sends X-Version: 3 on all API requests.
+- Supports both data.items and v3 top-level items pagination responses.
 - Adds sort=+id to list requests.
 - Use --debug to print request URLs and response status codes.
 
 Created by Ryan Gillan
 ryangillan@gmail.com
-Ver 1.6
+Ver 1.8
 """
 
 import os
@@ -71,6 +77,7 @@ ACCESS_KEY = ""
 ACCESS_ID = ""
 COMPANY = ""
 BASE_URL = ""
+API_VERSION = "3"
 
 
 def load_lm_config() -> None:
@@ -118,6 +125,7 @@ def generate_auth_headers(http_verb: str, resource_path: str, data: str = "") ->
     return {
         "Content-Type": "application/json",
         "Accept": "application/json",
+        "X-Version": API_VERSION,
         "Authorization": auth,
     }
 
@@ -149,6 +157,7 @@ def debug_print_request(resource_path: str, url: str, params: Dict[str, Any], at
     debug_url = build_debug_url(url, params)
     print(f"DEBUG request attempt {attempt}/{retries}: GET {debug_url}")
     print(f"DEBUG resource path used for LMv1 signature: {resource_path}")
+    print(f"DEBUG request headers: X-Version={API_VERSION}, Accept=application/json")
 
 
 def debug_print_response(resp: requests.Response) -> None:
@@ -323,12 +332,24 @@ def extract_items(payload: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[s
     """
     Extract items and pagination metadata from a standard LogicMonitor response.
     """
-    data = payload.get("data") or {}
-    items = data.get("items") or []
+    data = payload.get("data")
+
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        response_container = data
+        items = data.get("items") or []
+    elif isinstance(payload.get("items"), list):
+        response_container = payload
+        items = payload.get("items") or []
+    elif isinstance(data, list):
+        response_container = payload
+        items = data
+    else:
+        response_container = {}
+        items = []
 
     meta = {
-        "total": data.get("total"),
-        "searchId": data.get("searchId"),
+        "total": response_container.get("total"),
+        "searchId": response_container.get("searchId"),
         "filteredCount": (payload.get("meta") or {}).get("filteredCount"),
     }
 
@@ -397,10 +418,23 @@ MODULE_ENDPOINTS = {
     "jobmonitors": "/setting/batchjobs",
     "appliestofunctions": "/setting/functions",
     "oids": "/setting/oids",
+    "diagnosticsources": "/setting/diagnosticsources",
 }
 
 MODULE_TYPE_ALIASES = {
     "propertyrules": "propertysources",
+
+    # Friendly aliases for DiagnosticSources.
+    # normalize_requested_types lowercases requested types, so:
+    # diagnosticSources -> diagnosticsources
+    # exchangeDiagnosticSources -> exchangediagnosticsources
+    "diagnostic-sources": "diagnosticsources",
+    "diagnostic_sources": "diagnosticsources",
+    "exchangediagnosticsources": "diagnosticsources",
+    "exchange-diagnostic-sources": "diagnosticsources",
+    "exchange_diagnostic_sources": "diagnosticsources",
+    "exchange-diagnosticsources": "diagnosticsources",
+    "exchange_diagnosticsources": "diagnosticsources",
 }
 
 DEFAULT_FORMAT = "json"
@@ -567,8 +601,20 @@ Examples:
   Export PropertySources using the API endpoint alias:
     python export_modules.py --types propertyrules --out output_modules
 
+  Export DiagnosticSources:
+    python export_modules.py --types diagnosticsources --out output_modules
+
+  Export DiagnosticSources using camelCase:
+    python export_modules.py --types diagnosticSources --out output_modules
+
+  Export DiagnosticSources using the previous Exchange Diagnostic Sources alias:
+    python export_modules.py --types exchangeDiagnosticSources --out output_modules
+
   Debug PropertySources request URLs:
     python export_modules.py --types propertysources --out output_modules --debug
+
+  Debug DiagnosticSources request URLs:
+    python export_modules.py --types diagnosticsources --out output_modules --debug
 
 Valid module types:
   {", ".join(MODULE_ENDPOINTS.keys())}
@@ -576,6 +622,12 @@ Valid module types:
 
 Aliases:
   propertyrules -> propertysources
+  diagnosticSources -> diagnosticsources
+  diagnostic-sources -> diagnosticsources
+  diagnostic_sources -> diagnosticsources
+  exchangeDiagnosticSources -> diagnosticsources
+  exchange-diagnostic-sources -> diagnosticsources
+  exchange_diagnostic_sources -> diagnosticsources
 """
 
     parser = argparse.ArgumentParser(
@@ -592,6 +644,8 @@ Aliases:
             "Module types to export. Use one or more of: "
             + ", ".join(MODULE_ENDPOINTS.keys())
             + ", propertyrules"
+            + ", diagnosticSources"
+            + ", exchangeDiagnosticSources"
             + " or 'all'."
         ),
     )
