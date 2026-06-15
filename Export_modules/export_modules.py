@@ -10,10 +10,11 @@ Covered module types (API v3 endpoints):
 - ConfigSources      : /setting/configsources
 - PropertySources    : /setting/propertyrules
 - TopologySources    : /setting/topologysources
+- RemediationSources : /setting/remediationsources
+- DiagnosticSources  : /setting/diagnosticsources
 - JobMonitors        : /setting/batchjobs
 - AppliesToFunctions : /setting/functions
 - OIDs (SNMP SysOID) : /setting/oids
-- DiagnosticSources  : /setting/diagnosticsources
 
 Requirements:
 - Python 3.8+
@@ -30,20 +31,19 @@ Usage examples:
   python export_modules.py --types datasources eventsources --out output
   python export_modules.py --types all --out output --size 200 --sleep 0.2
   python export_modules.py --types datasources --filter 'name~"CPU"' --out output
+  python export_modules.py --types datasources --out output --markdown
   python export_modules.py --types propertysources --out output --debug
-  python export_modules.py --types diagnosticsources --out output
-  python export_modules.py --types exchangeDiagnosticSources --out output
 
 Notes:
 - Running without arguments prints help and exits.
 - Adds retry (3 attempts) for transient errors and continues on module-type failure.
 - If HTTP 429 (rate limited): sleeps 30 seconds, or honors Retry-After, then retries.
 - Writes one JSON file per module item.
+- Optionally writes one Markdown file per module item.
 - Does not write index.json.
 - Per-item files are named without the LogicModule ID.
 - If duplicate module names exist in the same module type, files are safely numbered.
 - PropertySources use the /setting/propertyrules endpoint.
-- DiagnosticSources use the /setting/diagnosticsources endpoint.
 - Sends X-Version: 3 on all API requests.
 - Supports both data.items and v3 top-level items pagination responses.
 - Adds sort=+id to list requests.
@@ -51,7 +51,7 @@ Notes:
 
 Created by Ryan Gillan
 ryangillan@gmail.com
-Ver 1.8
+Ver 1.9
 """
 
 import os
@@ -367,6 +367,14 @@ def write_json(path: str, obj: Any) -> None:
         json.dump(obj, f, indent=2, ensure_ascii=False)
 
 
+def write_text(path: str, text: str) -> None:
+    """
+    Write text to a UTF-8 file.
+    """
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
 def unique_json_path(directory: str, filename: str) -> str:
     """
     Return a unique JSON file path inside directory.
@@ -405,6 +413,99 @@ def module_filename(item: Dict[str, Any]) -> str:
     return f"{safe_filename(str(name))}.json"
 
 
+def coerce_dict(value: Any) -> Dict[str, Any]:
+    """
+    Return value as a dict when possible.
+
+    Some LogicMonitor fields are returned as nested objects, while some callers
+    may provide JSON strings. Anything else is treated as empty metadata.
+    """
+    if isinstance(value, dict):
+        return value
+
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+
+        if isinstance(parsed, dict):
+            return parsed
+
+    return {}
+
+
+def metadata_value(item: Dict[str, Any], key: str) -> Any:
+    """
+    Read a module metadata value from common LogicMonitor metadata locations.
+    """
+    metadata_sources = (
+        item,
+        coerce_dict(item.get("installationMetadata")),
+        coerce_dict(item.get("metadata")),
+        coerce_dict(item.get("moduleMetadata")),
+    )
+
+    for source in metadata_sources:
+        if key in source:
+            return source.get(key)
+
+    return ""
+
+
+def markdown_table_value(value: Any) -> str:
+    """
+    Format a value so it is safe to place inside a Markdown table cell.
+    """
+    if value is None:
+        return ""
+
+    if isinstance(value, (dict, list)):
+        value = json.dumps(value, ensure_ascii=False)
+    else:
+        value = str(value)
+
+    return (
+        value.replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\n", "<br>")
+    )
+
+
+def build_module_markdown(module_key: str, item: Dict[str, Any], export_timestamp: str) -> str:
+    """
+    Build a Markdown summary for a LogicMonitor module item.
+    """
+    rows = [
+        ("ID:", item.get("id")),
+        ("Name:", item.get("name")),
+        ("Display Name:", item.get("displayName")),
+        ("Applies To:", item.get("appliesTo")),
+        ("Description:", item.get("description")),
+        ("Tags:", item.get("tags")),
+        ("Collect Method:", item.get("collectMethod")),
+        ("Collect Interval:", item.get("collectInterval")),
+        ("Tech note:", item.get("technology")),
+        ("Export date:", export_timestamp),
+    ]
+
+    lines = [
+        "## LogicMonitor Module details",
+        f"### Module type: {markdown_table_value(module_key)}",
+        "",
+        "| Item:                 | Details|",
+        "| ----|----|",
+    ]
+
+    for label, value in rows:
+        lines.append(f"| {label:<22} | {markdown_table_value(value)} |")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 # -----------------------------
 # Module Exporter
 # -----------------------------
@@ -415,26 +516,15 @@ MODULE_ENDPOINTS = {
     "configsources": "/setting/configsources",
     "propertysources": "/setting/propertyrules",
     "topologysources": "/setting/topologysources",
+    "remediationsources": "/setting/remediationsources",
+    "diagnosticsources": "/setting/diagnosticsources",
     "jobmonitors": "/setting/batchjobs",
     "appliestofunctions": "/setting/functions",
     "oids": "/setting/oids",
-    "diagnosticsources": "/setting/diagnosticsources",
 }
 
 MODULE_TYPE_ALIASES = {
     "propertyrules": "propertysources",
-
-    # Friendly aliases for DiagnosticSources.
-    # normalize_requested_types lowercases requested types, so:
-    # diagnosticSources -> diagnosticsources
-    # exchangeDiagnosticSources -> exchangediagnosticsources
-    "diagnostic-sources": "diagnosticsources",
-    "diagnostic_sources": "diagnosticsources",
-    "exchangediagnosticsources": "diagnosticsources",
-    "exchange-diagnostic-sources": "diagnosticsources",
-    "exchange_diagnostic_sources": "diagnosticsources",
-    "exchange-diagnosticsources": "diagnosticsources",
-    "exchange_diagnosticsources": "diagnosticsources",
 }
 
 DEFAULT_FORMAT = "json"
@@ -507,13 +597,16 @@ def export_module_type(
     fields: Optional[str],
     filter_expr: Optional[str],
     debug: bool,
+    markdown: bool,
 ) -> None:
     """
     Export one module type and continue on error.
 
     Writes:
       - <out_dir>/<module_key>/<name>.json
+      - <out_dir>/<module_key>/<name>.md if markdown=True
       - <out_dir>/<module_key>/<name>__2.json if duplicate names exist
+      - <out_dir>/<module_key>/<name>__2.md if duplicate names exist and markdown=True
       - <out_dir>/<module_key>/_error.txt if failed
 
     Does not write index.json.
@@ -554,6 +647,8 @@ def export_module_type(
     )
 
     saved_count = 0
+    markdown_count = 0
+    export_timestamp = time.strftime("%Y-%m-%d %H:%M:%S %Z") if markdown else ""
 
     for item in items:
         fname = module_filename(item)
@@ -561,7 +656,16 @@ def export_module_type(
         write_json(item_path, item)
         saved_count += 1
 
-    print(f"Saved {saved_count} per-item files -> {module_dir}")
+        if markdown:
+            markdown_path = os.path.splitext(item_path)[0] + ".md"
+            markdown_content = build_module_markdown(module_key, item, export_timestamp)
+            write_text(markdown_path, markdown_content)
+            markdown_count += 1
+
+    print(f"Saved {saved_count} per-item JSON files -> {module_dir}")
+
+    if markdown:
+        print(f"Saved {markdown_count} per-item Markdown files -> {module_dir}")
 
 
 # -----------------------------
@@ -586,6 +690,9 @@ Examples:
   Export DataSources matching a name filter:
     python export_modules.py --types datasources --filter 'name~"CPU"' --out output_modules
 
+  Export DataSources with matching Markdown summary files:
+    python export_modules.py --types datasources --out output_modules --markdown
+
   Export all module types with larger page size and page pacing:
     python export_modules.py --types all --out output_modules --size 200 --sleep 0.2
 
@@ -601,20 +708,8 @@ Examples:
   Export PropertySources using the API endpoint alias:
     python export_modules.py --types propertyrules --out output_modules
 
-  Export DiagnosticSources:
-    python export_modules.py --types diagnosticsources --out output_modules
-
-  Export DiagnosticSources using camelCase:
-    python export_modules.py --types diagnosticSources --out output_modules
-
-  Export DiagnosticSources using the previous Exchange Diagnostic Sources alias:
-    python export_modules.py --types exchangeDiagnosticSources --out output_modules
-
   Debug PropertySources request URLs:
     python export_modules.py --types propertysources --out output_modules --debug
-
-  Debug DiagnosticSources request URLs:
-    python export_modules.py --types diagnosticsources --out output_modules --debug
 
 Valid module types:
   {", ".join(MODULE_ENDPOINTS.keys())}
@@ -622,12 +717,6 @@ Valid module types:
 
 Aliases:
   propertyrules -> propertysources
-  diagnosticSources -> diagnosticsources
-  diagnostic-sources -> diagnosticsources
-  diagnostic_sources -> diagnosticsources
-  exchangeDiagnosticSources -> diagnosticsources
-  exchange-diagnostic-sources -> diagnosticsources
-  exchange_diagnostic_sources -> diagnosticsources
 """
 
     parser = argparse.ArgumentParser(
@@ -644,8 +733,6 @@ Aliases:
             "Module types to export. Use one or more of: "
             + ", ".join(MODULE_ENDPOINTS.keys())
             + ", propertyrules"
-            + ", diagnosticSources"
-            + ", exchangeDiagnosticSources"
             + " or 'all'."
         ),
     )
@@ -686,6 +773,13 @@ Aliases:
         "--debug",
         action="store_true",
         help="Print fully encoded request URLs, resource paths, response status codes, and non-200 body previews.",
+    )
+
+    parser.add_argument(
+        "--markdown",
+        "--md",
+        action="store_true",
+        help="Also create a Markdown .md summary file beside each exported JSON module file.",
     )
 
     if not argv:
@@ -753,6 +847,7 @@ def main() -> None:
             fields=args.fields,
             filter_expr=args.filter,
             debug=args.debug,
+            markdown=args.markdown,
         )
 
     print("\nDone.")
