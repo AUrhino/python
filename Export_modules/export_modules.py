@@ -7,6 +7,7 @@ Covered module types (API v3 endpoints):
 - DataSources        : /setting/datasources
 - EventSources       : /setting/eventsources
 - LogSources         : /setting/logsources
+- LogPipelines       : /logpipelines
 - ConfigSources      : /setting/configsources
 - PropertySources    : /setting/propertyrules
 - TopologySources    : /setting/topologysources
@@ -44,6 +45,7 @@ Notes:
 - Per-item files are named without the LogicModule ID.
 - If duplicate module names exist in the same module type, files are safely numbered.
 - PropertySources use the /setting/propertyrules endpoint.
+- LogPipelines use the /logpipelines endpoint.
 - Sends X-Version: 3 on all API requests.
 - Supports both data.items and v3 top-level items pagination responses.
 - Adds sort=+id to list requests.
@@ -513,6 +515,7 @@ MODULE_ENDPOINTS = {
     "datasources": "/setting/datasources",
     "eventsources": "/setting/eventsources",
     "logsources": "/setting/logsources",
+    "logpipelines": "/logpipelines",
     "configsources": "/setting/configsources",
     "propertysources": "/setting/propertyrules",
     "topologysources": "/setting/topologysources",
@@ -524,6 +527,7 @@ MODULE_ENDPOINTS = {
 }
 
 MODULE_TYPE_ALIASES = {
+    "logpipeline": "logpipelines",
     "propertyrules": "propertysources",
 }
 
@@ -687,6 +691,9 @@ Examples:
   Export only DataSources and EventSources:
     python export_modules.py --types datasources eventsources --out output_modules
 
+  Export LogPipelines:
+    python export_modules.py --types logpipelines --out output_modules
+
   Export DataSources matching a name filter:
     python export_modules.py --types datasources --filter 'name~"CPU"' --out output_modules
 
@@ -716,6 +723,7 @@ Valid module types:
   all
 
 Aliases:
+  logpipeline -> logpipelines
   propertyrules -> propertysources
 """
 
