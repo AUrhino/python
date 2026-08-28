@@ -377,22 +377,37 @@ def write_text(path: str, text: str) -> None:
         f.write(text)
 
 
-def unique_json_path(directory: str, filename: str) -> str:
+def unique_json_path(
+    directory: str,
+    filename: str,
+    overwrite: bool = True,
+) -> Optional[str]:
     """
-    Return a unique JSON file path inside directory.
+    Return a JSON output path inside directory.
 
-    This avoids overwriting files when multiple modules in the same module type
-    have the same name. The LogicModule ID is intentionally not used.
+    overwrite=True:
+        The normal filename is reused, so an existing export is replaced.
+
+    overwrite=False:
+        An existing filename is skipped (returns None), while duplicate names
+        within the current export are still safely numbered.
     """
     stem, ext = os.path.splitext(filename)
     candidate = os.path.join(directory, filename)
+
+    if overwrite:
+        return candidate
+
+    if not os.path.exists(candidate):
+        return candidate
+
     counter = 2
 
-    while os.path.exists(candidate):
+    while True:
         candidate = os.path.join(directory, f"{stem}__{counter}{ext}")
+        if not os.path.exists(candidate):
+            return candidate
         counter += 1
-
-    return candidate
 
 
 def module_filename(item: Dict[str, Any]) -> str:
@@ -453,6 +468,79 @@ def metadata_value(item: Dict[str, Any], key: str) -> Any:
             return source.get(key)
 
     return ""
+
+
+def get_registry_metadata(
+    module_key: str,
+    module_id: Any,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """
+    Get authoritative LogicMonitor registry metadata for a LogicModule.
+
+    This uses the same registry metadata endpoint used by
+    Get-LMDatasourceMetadata, e.g.:
+
+        /setting/registry/metadata/datasource/1643
+
+    The registry endpoint is authoritative for the namespace classification.
+    """
+    registry_type = REGISTRY_METADATA_TYPES.get(module_key)
+
+    if not registry_type or module_id is None or str(module_id).strip() == "":
+        return {}
+
+    resource_path = f"/setting/registry/metadata/{registry_type}/{module_id}"
+    payload = api_get(resource_path, debug=debug)
+
+    # LogicMonitor may return the object directly or inside "data".
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, dict):
+            return data
+        return payload
+
+    return {}
+
+
+def is_service_module(item: Dict[str, Any]) -> bool:
+    """
+    Return True when the LogicModule is a LogicMonitor service.
+
+    Services are identified by:
+        collectMethod == "aggregate"
+    """
+    return str(item.get("collectMethod", "")).strip().lower() == "aggregate"
+
+
+def is_custom_module(
+    item: Dict[str, Any],
+    module_key: str,
+    debug: bool = False,
+) -> bool:
+    """
+    Return True when the LogicModule is custom.
+
+    Authoritative rule:
+        registry metadata "namespace" != "core"
+
+    Missing/null namespace is considered custom.
+
+    isChangedFromOrigin is NOT used.
+    """
+    registry_metadata = get_registry_metadata(
+        module_key=module_key,
+        module_id=item.get("id"),
+        debug=debug,
+    )
+
+    namespace = registry_metadata.get("namespace")
+
+    # Missing/null/blank namespace => custom.
+    if namespace is None:
+        return True
+
+    return str(namespace).strip().lower() != "core"
 
 
 def markdown_table_value(value: Any) -> str:
@@ -524,6 +612,24 @@ MODULE_ENDPOINTS = {
     "jobmonitors": "/setting/batchjobs",
     "appliestofunctions": "/setting/functions",
     "oids": "/setting/oids",
+}
+
+# Registry metadata endpoint type names used by the LogicMonitor
+# registry metadata API. Example:
+#   /setting/registry/metadata/datasource/1643
+REGISTRY_METADATA_TYPES = {
+    "datasources": "datasource",
+    "eventsources": "eventsource",
+    "logsources": "logsource",
+    "logpipelines": "logpipeline",
+    "configsources": "configsource",
+    "propertysources": "propertysource",
+    "topologysources": "topologysource",
+    "remediationsources": "remediationsource",
+    "diagnosticsources": "diagnosticsource",
+    "jobmonitors": "jobmonitor",
+    "appliestofunctions": "appliestofunction",
+    "oids": "oid",
 }
 
 MODULE_TYPE_ALIASES = {
@@ -602,6 +708,9 @@ def export_module_type(
     filter_expr: Optional[str],
     debug: bool,
     markdown: bool,
+    custom_only: bool,
+    include_services: bool,
+    overwrite: bool,
 ) -> None:
     """
     Export one module type and continue on error.
@@ -612,6 +721,9 @@ def export_module_type(
       - <out_dir>/<module_key>/<name>__2.json if duplicate names exist
       - <out_dir>/<module_key>/<name>__2.md if duplicate names exist and markdown=True
       - <out_dir>/<module_key>/_error.txt if failed
+
+    With --overwrite false, an existing output file is preserved and a new
+    numbered filename is used instead of replacing it.
 
     Does not write index.json.
     """
@@ -650,21 +762,112 @@ def export_module_type(
         f"Will save to the folder: {os.path.abspath(module_dir)}"
     )
 
+    if custom_only or include_services:
+        original_count = len(items)
+        filtered_items: List[Dict[str, Any]] = []
+        skipped_core_count = 0
+        included_service_count = 0
+        metadata_lookup_failures = 0
+
+        if custom_only:
+            print(
+                "Custom-only filtering: checking registry metadata endpoint for "
+                f"{original_count} {module_key} modules..."
+            )
+
+        for item in items:
+            # Services are explicitly included when --include-services is used.
+            # This takes precedence over the custom/core classification because
+            # services are a separate opt-in export category.
+            if include_services and is_service_module(item):
+                filtered_items.append(item)
+                included_service_count += 1
+                continue
+
+            if not custom_only:
+                filtered_items.append(item)
+                continue
+
+            try:
+                registry_metadata = get_registry_metadata(
+                    module_key=module_key,
+                    module_id=item.get("id"),
+                    debug=debug,
+                )
+            except Exception as e:
+                # Never export a module under --custom-only when its authoritative
+                # registry metadata cannot be retrieved.
+                metadata_lookup_failures += 1
+                print(
+                    f"Warning: registry metadata lookup failed for "
+                    f"{module_key} ID {item.get('id')}: {e}"
+                )
+                continue
+
+            namespace = registry_metadata.get("namespace")
+
+            # Missing/null namespace is explicitly considered custom.
+            if namespace is None:
+                filtered_items.append(item)
+            elif str(namespace).strip().lower() != "core":
+                filtered_items.append(item)
+            else:
+                skipped_core_count += 1
+
+        items = filtered_items
+
+        if custom_only:
+            print(
+                f"Custom-only filtering: kept {len(items)} modules, "
+                f"skipped {skipped_core_count} core modules."
+            )
+
+        if include_services:
+            print(
+                f"Service inclusion: included {included_service_count} "
+                f"aggregate service modules."
+            )
+
+        if metadata_lookup_failures:
+            print(
+                f"Custom-only filtering: {metadata_lookup_failures} modules "
+                "were not exported because registry metadata could not be retrieved."
+            )
+
     saved_count = 0
     markdown_count = 0
     export_timestamp = time.strftime("%Y-%m-%d %H:%M:%S %Z") if markdown else ""
 
     for item in items:
         fname = module_filename(item)
-        item_path = unique_json_path(module_dir, fname)
+        item_path = unique_json_path(
+            module_dir,
+            fname,
+            overwrite=overwrite,
+        )
+
+        # --overwrite=false: skip an already-existing primary/duplicate output.
+        if item_path is None:
+            print(f"Skipped existing file -> {os.path.join(module_dir, fname)}")
+            continue
+
         write_json(item_path, item)
         saved_count += 1
 
         if markdown:
             markdown_path = os.path.splitext(item_path)[0] + ".md"
-            markdown_content = build_module_markdown(module_key, item, export_timestamp)
-            write_text(markdown_path, markdown_content)
-            markdown_count += 1
+
+            # Keep JSON and Markdown behavior aligned when overwrite=false.
+            if not overwrite and os.path.exists(markdown_path):
+                print(f"Skipped existing Markdown -> {markdown_path}")
+            else:
+                markdown_content = build_module_markdown(
+                    module_key,
+                    item,
+                    export_timestamp,
+                )
+                write_text(markdown_path, markdown_content)
+                markdown_count += 1
 
     print(f"Saved {saved_count} per-item JSON files -> {module_dir}")
 
@@ -699,6 +902,9 @@ Examples:
 
   Export DataSources with matching Markdown summary files:
     python export_modules.py --types datasources --out output_modules --markdown
+
+  Export only custom DataSources:
+    python export_modules.py --types datasources --out output_modules --custom-only
 
   Export all module types with larger page size and page pacing:
     python export_modules.py --types all --out output_modules --size 200 --sleep 0.2
@@ -790,6 +996,49 @@ Aliases:
         help="Also create a Markdown .md summary file beside each exported JSON module file.",
     )
 
+    parser.add_argument(
+        "--custom-only",
+        action="store_true",
+        default=False,
+        help=(
+            "Only export custom modules. Core modules are identified by "
+            "installationMetadata.originAuthorNamespace=core and are skipped "
+            "based on the registry metadata namespace; missing/null namespace is custom."
+        ),
+    )
+
+    parser.add_argument(
+        "--include-services",
+        action="store_true",
+        default=False,
+        help=(
+            "Include LogicMonitor services in DataSource exports. "
+            "Services are identified by collectMethod=aggregate."
+        ),
+    )
+
+    def parse_bool(value: str) -> bool:
+        value_normalized = value.strip().lower()
+        if value_normalized in ("true", "1", "yes", "y", "on"):
+            return True
+        if value_normalized in ("false", "0", "no", "n", "off"):
+            return False
+        raise argparse.ArgumentTypeError(
+            "Expected true/false (or 1/0, yes/no, on/off)."
+        )
+
+    parser.add_argument(
+        "--overwrite",
+        type=parse_bool,
+        default=True,
+        metavar="{true,false}",
+        help=(
+            "Overwrite existing output files. Default: true. "
+            "Use --overwrite false to preserve existing files and create "
+            "numbered files for name collisions."
+        ),
+    )
+
     if not argv:
         parser.print_help(sys.stdout)
         raise SystemExit(0)
@@ -856,6 +1105,9 @@ def main() -> None:
             filter_expr=args.filter,
             debug=args.debug,
             markdown=args.markdown,
+            custom_only=args.custom_only,
+            include_services=args.include_services,
+            overwrite=args.overwrite,
         )
 
     print("\nDone.")
