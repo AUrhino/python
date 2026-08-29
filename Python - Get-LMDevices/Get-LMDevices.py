@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+"""List Resources and show modules.
+
+Credentials come from LM_COMPANY, LM_ACCESS_ID, and LM_ACCESS_KEY, or the
+corresponding command-line options.  CSV rows use the same names as the API
+payload (for example: type, deviceId, startDateTime, endDateTime, comment).
+"""
+
 """List LogicMonitor devices with optional fields, properties, CSV, and counts."""
 import argparse, base64, csv, hashlib, hmac, json, os, time
 from pathlib import Path
@@ -32,7 +40,7 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=__version__)
-    parser.add_argument("--csv", dest="csv_path", metavar="PATH", help="Write the device table to PATH.")
+    parser.add_argument("--csv", "--output-csv", "--export-csv", dest="csv_path", metavar="PATH", help="Write the device table to PATH.")
     parser.add_argument("--show-counts", type=str_to_bool, default=False, metavar="true|false", help="Show DataSource and instance counts for every device (default: false).")
     parser.add_argument("--show_modules", "--show-modules", type=str_to_bool, default=False, metavar="true|false",
                         help="Display DataSources and their instances for every device (default: false).")
@@ -124,6 +132,7 @@ def show_modules_for_device(device):
         headers=["DataSource ID", "Name", "DataSource Display Name", "Device Name", "Display Name", "Instance Count", "Monitoring Instance Count"],
         tablefmt="grid",
     ))
+    return datasource_rows
 
 def export_csv(path, headers, rows):
     output = Path(path).expanduser(); output.parent.mkdir(parents=True, exist_ok=True)
@@ -191,9 +200,14 @@ def main():
     print(tabulate(rows, headers=headers, tablefmt="grid"))
     Path("output").mkdir(exist_ok=True)
     with open("output/getDevices.json", "w") as handle: json.dump(devices, handle, indent=4)
-    if args.csv_path: export_csv(args.csv_path, headers, rows)
     if args.show_modules:
+        module_headers = ["DataSource ID", "Name", "DataSource Display Name", "Device Name", "Display Name", "Instance Count", "Monitoring Instance Count"]
+        module_rows = []
         for device in devices:
-            show_modules_for_device(device)
+            module_rows.extend(show_modules_for_device(device))
+        if args.csv_path:
+            export_csv(args.csv_path, module_headers, module_rows)
+    elif args.csv_path:
+        export_csv(args.csv_path, headers, rows)
 
 if __name__ == "__main__": main()
