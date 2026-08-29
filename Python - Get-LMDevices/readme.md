@@ -39,6 +39,8 @@ The device list uses the LogicMonitor endpoint `/santaba/rest/device/devices/`. 
 
 ```text
 --csv PATH
+--output-csv PATH
+--export-csv PATH
     Export the displayed device table to PATH.
 
 --show-counts true|false
@@ -104,6 +106,8 @@ python3 Get-LMDevices.py --filter displayName=Lenny --show_modules true
 # Export the displayed table to CSV
 python3 Get-LMDevices.py --csv output/devices.csv
 python3 Get-LMDevices.py --show-counts true --csv output/devices-with-counts.csv
+python3 Get-LMDevices.py --output-csv output/devices-alias.csv
+python3 Get-LMDevices.py --filter displayName=Lenny --show_modules true --csv output/modules.csv
 ```
 
 ## Output
@@ -121,6 +125,8 @@ Raw device data is saved to `output/getDevices.json`. When `--show_modules true`
 ```text
 id,dataSourceName,dataSourceDisplayName,instanceNumber,monitoringInstanceNumber
 ```
+
+When `--show_modules true` and `--csv` are used together, the CSV contains the combined module table, including instance and monitoring-instance counts.
 
 ## Author
 
