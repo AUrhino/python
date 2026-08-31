@@ -23,6 +23,7 @@ Files are exported to a specific folder.
 
 ## Output
 - The script will display retrieved information in a formatted table in the console.
+- Use `--markdown FILE` with any view to export the result as GitHub-flavored Markdown.
 
 
 ## Requirements:
@@ -33,22 +34,25 @@ Files are exported to a specific folder.
 ## Examples:
 ```
 - Show help:
-    python3 Export-LMGroups.py
+    python3 Get-LMGroups.py
 
 - Show device group summary:
-    python3 Export-LMGroups.py --show
+    python3 Get-LMGroups.py --show
 
 - Show detailed device group view:
-    python3 Export-LMGroups.py --show-detailed
+    python3 Get-LMGroups.py --show-detailed
 
 - Show a single device group:
-    python3 Export-LMGroups.py --show-single --id 26
+    python3 Get-LMGroups.py --show-single --id 26
 
 - Show device groups as a tree:
-    python3 Export-LMGroups.py --tree
+    python3 Get-LMGroups.py --tree
 
 - Enable debug output:
-    python3 Export-LMGroups.py --show --debug
+    python3 Get-LMGroups.py --show --debug
+
+- Export the detailed view to Markdown:
+    python3 Get-LMGroups.py --show-detailed --markdown groups.md
 
 ```
 
