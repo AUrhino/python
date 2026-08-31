@@ -37,6 +37,9 @@ Usage:
 
 - Enable debug output:
     python3 Get-LMGroups.py --show --debug
+
+- Export a view to Markdown:
+    python3 Get-LMGroups.py --show --markdown groups.md
 """
 
 import argparse
@@ -60,6 +63,7 @@ COMPANY = os.getenv("COMPANY")
 
 BASE_URL = f"https://{COMPANY}.logicmonitor.com/santaba/rest"
 DEBUG = False
+MARKDOWN_FILE: Optional[str] = None
 API_VERSION = "3"
 
 
@@ -189,12 +193,35 @@ def display_table(data: List[List], headers: List[str], title: str = "") -> None
     """
     Display data in a formatted ASCII table.
     """
+    if MARKDOWN_FILE:
+        markdown = []
+        if title:
+            markdown.append(f"## {title}\n")
+        markdown.append(tabulate(data, headers=headers, tablefmt="github"))
+        write_markdown("\n".join(markdown) + "\n")
+        return
+
     if title:
         print("\n" + "=" * 100)
         print(title)
         print("=" * 100)
 
     print(tabulate(data, headers=headers, tablefmt="grid"))
+
+
+def write_markdown(content: str) -> None:
+    """Write rendered Markdown to the requested output file."""
+    if not MARKDOWN_FILE:
+        return
+
+    try:
+        with open(MARKDOWN_FILE, "w", encoding="utf-8") as output_file:
+            output_file.write(content)
+    except OSError as exc:
+        print(f"Error writing Markdown file '{MARKDOWN_FILE}': {exc}")
+        return
+
+    print(f"Markdown exported to {MARKDOWN_FILE}")
 
 
 def extract_items_and_total(response: Dict) -> Tuple[List[Dict], Optional[int]]:
@@ -696,6 +723,10 @@ def render_tree(start_group_ids: List[int], title: str, branch_style: str) -> No
         print("No device groups found.")
         return
 
+    if MARKDOWN_FILE:
+        write_markdown("## " + title + "\n\n```text\n" + "\n".join(lines) + "\n```\n")
+        return
+
     print("\n" + "=" * 100)
     print(title)
     print("=" * 100)
@@ -802,6 +833,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable debug output and print API endpoints, headers, and HTTP codes.",
     )
+    parser.add_argument(
+        "--markdown",
+        metavar="FILE",
+        help="Export the selected view to a Markdown file.",
+    )
 
     if len(sys.argv) == 1:
         parser.print_help()
@@ -832,6 +868,7 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
     DEBUG = args.debug
+    MARKDOWN_FILE = args.markdown
     validate_env()
 
     if args.show:
