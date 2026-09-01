@@ -1,7 +1,7 @@
 """List LogicMonitor DataSources that are not Core modules.
 
 Credentials are loaded from a .env file containing ACCESS_ID, ACCESS_KEY,
-and COMPANY. The script writes LM_Modules_noncore.csv in the current directory.
+and COMPANY. The script writes out_noncore.csv in the current directory.
 """
 
 import base64
@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 
 PAGE_SIZE = 100
 API_VERSION = "3"
-OUTPUT_FILE = "LM_Modules_noncore.csv"
+OUTPUT_FILE = "out_noncore.csv"
 
 
 def load_config() -> str:
@@ -62,31 +62,42 @@ def auth_headers(resource_path: str) -> Dict[str, str]:
 
 def get_json(base_url: str, resource_path: str, params: Dict[str, Any], debug: bool = False) -> Dict[str, Any]:
     url = base_url + resource_path
-    if debug:
-        prepared = requests.Request("GET", url, params=params).prepare()
-        print(f"DEBUG request: GET {prepared.url}")
-    response = requests.get(
-        url,
-        params=params,
-        headers=auth_headers(resource_path),
-        timeout=60,
-    )
-    if debug:
-        print(f"DEBUG response: HTTP {response.status_code}")
-    if response.status_code == 429:
-        wait = float(response.headers.get("Retry-After", "30"))
-        print(f"Rate limited; waiting {wait:g} seconds")
-        time.sleep(wait)
-        response = requests.get(
-            url,
-            params=params,
-            headers=auth_headers(resource_path),
-            timeout=60,
-        )
+    for attempt in range(1, 4):
         if debug:
-            print(f"DEBUG response after rate limit: HTTP {response.status_code}")
-    response.raise_for_status()
-    return response.json()
+            prepared = requests.Request("GET", url, params=params).prepare()
+            print(f"DEBUG request attempt {attempt}/3: GET {prepared.url}")
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                headers=auth_headers(resource_path),
+                timeout=60,
+            )
+        except requests.RequestException as error:
+            if attempt == 3:
+                raise
+            wait = 2 ** (attempt - 1)
+            print(f"Connection error ({error}); retrying in {wait}s")
+            time.sleep(wait)
+            continue
+
+        if debug:
+            print(f"DEBUG response: HTTP {response.status_code}")
+        if response.status_code == 429:
+            wait = float(response.headers.get("Retry-After", "30"))
+            print(f"Rate limited; waiting {wait:g} seconds")
+            time.sleep(wait)
+            continue
+        if response.status_code in {408, 500, 502, 503, 504} and attempt < 3:
+            wait = 2 ** (attempt - 1)
+            print(f"Transient HTTP {response.status_code}; retrying in {wait}s")
+            time.sleep(wait)
+            continue
+        response.raise_for_status()
+        return response.json()
+
+    # The loop either returns or raises; this is defensive only.
+    raise RuntimeError(f"Unable to retrieve {resource_path}")
 
 
 def list_datasources(base_url: str, debug: bool = False) -> List[Dict[str, Any]]:
