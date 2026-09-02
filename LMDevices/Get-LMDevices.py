@@ -48,6 +48,8 @@ def parse_args():
     parser.add_argument("--include-fields", metavar="NAME,...", help="Include additional comma-separated device API fields as columns.")
     parser.add_argument("--filter", action="append", metavar="FIELD=VALUE",
                         help="Filter devices by an API field, e.g. --filter displayName=Lenny. Repeat for multiple filters.")
+    parser.add_argument("--test-mode", action="store_true",
+                        help="Return at most 10 devices (useful for testing).")
     parser.add_argument("--debug", action="store_true", help="Display the prepared API request URL.")
     return parser.parse_args()
 
@@ -186,6 +188,8 @@ def main():
         params["filter"] = filter_expression
     print("Fetching devices...")
     devices = filter_devices(get_items("/device/devices/", params, debug=args.debug), args.filter)
+    if args.test_mode:
+        devices = devices[:10]
     print(json.dumps({"total": len(devices)}, indent=2))
     if not devices: return
     headers = ["Device ID", "Name", "Display Name", "Description"] + fields + props
