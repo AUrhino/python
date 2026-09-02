@@ -62,6 +62,9 @@ The device list uses the LogicMonitor endpoint `/santaba/rest/device/devices/`. 
 --filter FIELD=VALUE
     Filter devices by an API field. Repeat the option for multiple filters.
 
+--test-mode
+    Return at most 10 devices, after filters are applied. Useful for testing.
+
 --debug
     Display the prepared request URL, HTTP status, and response keys.
 
@@ -74,6 +77,9 @@ The device list uses the LogicMonitor endpoint `/santaba/rest/device/devices/`. 
 ```bash
 # Display all devices
 python3 Get-LMDevices.py
+
+# Return at most 10 devices for testing
+python3 Get-LMDevices.py --test-mode
 
 # Display help and version
 python3 Get-LMDevices.py --help
