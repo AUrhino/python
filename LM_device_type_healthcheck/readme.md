@@ -188,10 +188,7 @@ Current version: `1.0.0`
 python3 LM_device_type_healthcheck.py --version
 ```
 
-## Author
-
-Ryan Gillan  
-Email: ryangillan@gmail.com
+## Note:
 
 Resources with an empty monitoring summary, no active datasources, or unexpected auto-property values should be reviewed in LogicMonitor.
 
