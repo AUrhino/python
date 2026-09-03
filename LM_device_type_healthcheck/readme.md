@@ -35,6 +35,20 @@ Use test mode to process only the first 10 devices:
 python3 LM_device_type_healthcheck.py --test-mode --csv output/test-healthcheck.csv
 ```
 
+Create starter files for credentials and module reviews:
+
+```bash
+python3 LM_device_type_healthcheck.py --create-template
+```
+
+This creates `.env_example` and `modules_example.json` in the current folder. Use a custom module definition file with:
+
+```bash
+python3 LM_device_type_healthcheck.py --review-active-modules --modules-file modules_example.json --group-id 36
+```
+
+The module file defaults to `review-active-modules.json` when `--modules-file` is not supplied. Group and device-type filters can be combined with these templates to create focused reports.
+
 Device retrieval is paged automatically using the LogicMonitor API `total`, `size`, and `offset` values, so resources beyond the first 1,000 devices are included. The script reports the total device count when it starts.
 
 ## Usage
@@ -51,7 +65,7 @@ Run the default health check:
 python3 LM_device_type_healthcheck.py
 ```
 
-This uses credentials from `.env` and writes to `output/healthcheck.csv`. Use `--help` to display command help.
+With no arguments, the script displays help. When run with an operational option but no output destination, it uses credentials from `.env` and writes to `output/healthcheck.csv`. Use `--help` to display command help explicitly.
 
 When run with options but no output destination, results default to `output/healthcheck.csv`:
 
@@ -141,6 +155,19 @@ The `Monitoring` column follows the PropertySource logic: `noping` takes precede
 - Auto-properties and `system.sysoid`: supporting monitoring-health details.
 
 Results are written to a file with `--csv` or `--markdown`; the data table is never printed to the screen. Only a write success or failure message with the device count is shown. Markdown reports also include the device count in the file.
+
+## Version
+
+Current version: `1.0.0`
+
+```bash
+python3 LM_device_type_healthcheck.py --version
+```
+
+## Author
+
+Ryan Gillan  
+Email: ryangillan@gmail.com
 
 Resources with an empty monitoring summary, no active datasources, or unexpected auto-property values should be reviewed in LogicMonitor.
 
