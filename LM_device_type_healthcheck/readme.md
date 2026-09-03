@@ -49,6 +49,30 @@ python3 LM_device_type_healthcheck.py --review-active-modules --modules-file mod
 
 The module file defaults to `review-active-modules.json` when `--modules-file` is not supplied. Group and device-type filters can be combined with these templates to create focused reports.
 
+Example `modules_example.json`:
+
+```json
+{
+  "Interfaces": [
+    "interface",
+    "winif",
+    "network",
+    "Brocade_Switch_Ports"
+  ],
+  "Memory": [
+    "memory",
+    "mem",
+    "WinMemory64"
+  ],
+  "Ping": [
+    "Ping"
+  ],
+  "TerminalServices": "Terminal Services"
+}
+```
+
+Each JSON key becomes a `True`/`False` output column. A list checks multiple possible module names; a single string checks one name. Matching is case-insensitive and looks for the value within the active module name.
+
 Device retrieval is paged automatically using the LogicMonitor API `total`, `size`, and `offset` values, so resources beyond the first 1,000 devices are included. The script reports the total device count when it starts.
 
 ## Usage
