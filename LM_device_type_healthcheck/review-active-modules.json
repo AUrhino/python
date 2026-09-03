@@ -1,0 +1,14 @@
+{
+  "Interfaces": ["WinIf-", "SNMP_Network_Interfaces", "Brocade_Switch_Ports", "Interfaces-", "VMware_ESXi_NetworkInterfaces", "Linux_SSH_NetworkInterfaces"],
+  "Processor": ["Microsoft_Windows_CPU", "Cisco_CPU_SNMP", "Memory and Processes", "VVMware_ESXi_CPU", "Linux_SSH_CPUCores", "Force10 M Performance"],
+  "Memory": ["WinMemory64", "Cisco_MemoryPools_SNMP", "VMware_ESXi_Memory", "NetSNMP_Memory_Usage", "Linux_SSH_CPUMemory", "Force10 M Performance"],
+  "Filesystem": ["WinServer", "Linux_SSH_Filesystems"],
+  "Disk": ["WinLogicalDrivePerformance-", "Logical Drive Performance-","WinPhysicalDrive-", "VMware_ESXi_Disks;"],
+  "Neighbours": ["LLDP_Neighbors", "CDP_Neighbors"],
+  "SSL": ["SSL_Certificates", "HTTPS", "SSL_Certificate_Chains"],
+  "Ping": ["Ping"],
+  "config": ["SSH_Exec_Dynamic", "SSH_Exec_Standard"],
+  "Fans": ["CiscoFan-"],
+  "NTP": ["Cisco_NTP", "LLDP_Neighbors", "CDP_Neighbors", "Cisco_NTP", "Windows_WMITimeOffset"],
+  "Power": ["Cisco_FRU_Power", "Cisco_System_PowerSupplies", "VMware_ESXi_Power"]
+}
