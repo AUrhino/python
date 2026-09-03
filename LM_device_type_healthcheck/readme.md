@@ -142,3 +142,9 @@ The `Monitoring` column follows the PropertySource logic: `noping` takes precede
 Results are written to a file with `--csv` or `--markdown`; the data table is never printed to the screen. Only a write success or failure message with the device count is shown. Markdown reports also include the device count in the file.
 
 Resources with an empty monitoring summary, no active datasources, or unexpected auto-property values should be reviewed in LogicMonitor.
+
+
+## Author
+Ryan Gillan  
+Email: ryangillan@gmail.com
+
