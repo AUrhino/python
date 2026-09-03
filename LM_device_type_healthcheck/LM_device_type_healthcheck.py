@@ -17,6 +17,7 @@ import hashlib
 import json
 import hmac
 import os
+import sys
 import time
 from pathlib import Path
 from urllib.parse import urlencode
@@ -30,6 +31,7 @@ ACCESS_ID = os.getenv("ACCESS_ID")
 COMPANY = os.getenv("COMPANY")
 BASE_URL = f"https://{COMPANY}.logicmonitor.com/santaba/rest"
 DEBUG = False
+__version__ = "1.0.0"
 
 
 def api_get(path, params=None):
@@ -106,14 +108,27 @@ def is_true(value):
     return str(value).strip().casefold() in ("true", "1", "yes", "y", "t")
 
 
-def load_active_module_reviews():
-    config_path = Path(__file__).with_name("review-active-modules.json")
+def load_active_module_reviews(path=None):
+    config_path = Path(path).expanduser() if path else Path(__file__).with_name("review-active-modules.json")
     try:
         with config_path.open(encoding="utf-8") as handle:
             config = json.load(handle)
         return {str(key): value if isinstance(value, list) else [value] for key, value in config.items()}
     except (OSError, json.JSONDecodeError, AttributeError) as error:
         raise SystemExit(f"Unable to load {config_path}: {error}")
+
+
+def create_templates():
+    templates = {
+        Path(".env_example"): "ACCESS_ID=your_access_id\nACCESS_KEY=your_access_key\nCOMPANY=your_company_name\n",
+        Path("modules_example.json"): json.dumps({"Interfaces": ["interface", "winif", "network"], "Processor": ["cpu", "processor", "proc"], "Memory": ["memory", "mem"], "ExampleModule": ["example_module_name"]}, indent=2) + "\n",
+    }
+    for path, content in templates.items():
+        if path.exists():
+            print(f"Template creation failed: {path} already exists")
+            return
+        path.write_text(content, encoding="utf-8")
+        print(f"Template created: {path}")
 
 
 def check_resource(resource, include_properties=(), review_active_modules=False, module_reviews=None):
@@ -192,26 +207,42 @@ def main():
     parser = argparse.ArgumentParser(
         description=__doc__,
         epilog=(
-            "Examples:\n"
+            "## Usage\n"
+            "  Run the health check, display help, or create starter files.\n"
             "  python3 LM_device_type_healthcheck.py\n"
+            "  python3 LM_device_type_healthcheck.py --help\n"
+            "  python3 LM_device_type_healthcheck.py --create-template\n\n"
+            "## Output\n"
+            "  Save results as CSV or Markdown. The default CSV is output/healthcheck.csv.\n"
             "  python3 LM_device_type_healthcheck.py --csv output/healthcheck.csv\n"
             "  python3 LM_device_type_healthcheck.py --folder output --csv healthcheck.csv\n"
             "  python3 LM_device_type_healthcheck.py --folder /tmp/lm-reports\n"
-            "  python3 LM_device_type_healthcheck.py --markdown output/healthcheck.md\n"
+            "  python3 LM_device_type_healthcheck.py --markdown output/healthcheck.md\n\n"
+            "## Filter by group\n"
+            "  Check devices in a LogicMonitor group by ID or name/path.\n"
+            "  python3 LM_device_type_healthcheck.py --group-id 36\n"
+            "  python3 LM_device_type_healthcheck.py --group-name 'Linux Servers'\n\n"
+            "## Running with creds\n"
+            "  Use .env by default, or provide a custom credentials file.\n"
+            "  python3 LM_device_type_healthcheck.py --creds-file ~/.config/logicmonitor.env\n\n"
+            "## Custom\n"
+            "  Add named properties, API fields, or custom active-module definitions.\n"
             "  python3 LM_device_type_healthcheck.py --included-properties predef.externalResourceID\n"
-            "  python3 LM_device_type_healthcheck.py --include-properties snmptrap.authToken\n"
             "  python3 LM_device_type_healthcheck.py --include-properties snmptrap.authToken,ssh.user\n"
             "  python3 LM_device_type_healthcheck.py --extra-fields deviceType,enableNetflow,link\n"
-            "  python3 LM_device_type_healthcheck.py --creds-file ~/.config/logicmonitor.env\n"
-            "  python3 LM_device_type_healthcheck.py --group-id 36\n"
-            "  python3 LM_device_type_healthcheck.py --group-name 'Linux Servers'\n"
+            "  python3 LM_device_type_healthcheck.py --modules-file modules_example.json --review-active-modules --group-id 36\n"
+            "  Use groups and device fields with these templates to create focused reports.\n\n"
+            "## Testing and debug\n"
+            "  Limit processing to 10 devices or inspect API/module matching details.\n"
             "  python3 LM_device_type_healthcheck.py --test-mode --csv output/test-healthcheck.csv\n"
-            "  python3 LM_device_type_healthcheck.py --debug --test-mode\n"
-            "  python3 LM_device_type_healthcheck.py --output-folder reports --markdown reports/healthcheck.md\n"
-            "  source ~/python/bin/activate && python3 LM_device_type_healthcheck.py --csv healthcheck.csv"
+            "  python3 LM_device_type_healthcheck.py --debug --test-mode\n\n"
+            "## Author\n"
+            "Ryan Gillan\n"
+            "Email: ryangillan@gmail.com"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--csv", dest="csv_path", help="Also write results to this CSV path.")
     parser.add_argument("--folder", "--output-folder", dest="output_folder",
                         help="Folder for the CSV report. Defaults the filename to healthcheck.csv.")
@@ -230,12 +261,20 @@ def main():
     group.add_argument("--group-id", type=int, metavar="ID", help="Get devices from the LogicMonitor group ID.")
     parser.add_argument("--test-mode", action="store_true", help="Process only the first 10 devices.")
     parser.add_argument("--debug", action="store_true", help="Show API requests and module matching details.")
+    parser.add_argument("--modules-file", "--module-file", metavar="PATH", help="Override review-active-modules.json with a custom module definition file.")
+    parser.add_argument("--create-template", action="store_true", help="Create .env_example and modules_example.json, then exit.")
     args = parser.parse_args()
+    if args.create_template:
+        create_templates()
+        return
+    if len(sys.argv) == 1:
+        parser.print_help()
+        return
     if not args.csv_path and not args.output_folder and not args.markdown_path:
         args.csv_path = "output/healthcheck.csv"
     global DEBUG
     DEBUG = args.debug
-    module_reviews = load_active_module_reviews() if args.review_active_modules else {}
+    module_reviews = load_active_module_reviews(args.modules_file) if args.review_active_modules else {}
     global ACCESS_ID, ACCESS_KEY, COMPANY, BASE_URL
     if args.creds_file:
         credentials_file = Path(args.creds_file).expanduser()
