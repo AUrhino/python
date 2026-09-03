@@ -131,6 +131,7 @@ The `Monitoring` column follows the PropertySource logic: `noping` takes precede
 - `Model`: the `auto.entphysical.descr` property.
 - `External resource type`: the `predef.externalResourceType` property.
 - `IP addresses`: the `system.ips` property.
+- `hostStatus`: the device API `hostStatus` value.
 - `Type`: detected as Cisco, Windows, or Other based on resource fields and properties.
 - `Monitoring`: the assumed platform monitoring method when detected.
 - `Minimal Monitoring`: `True` when any `system.groups` folder path contains `Minimal Monitoring`.
@@ -144,7 +145,7 @@ Results are written to a file with `--csv` or `--markdown`; the data table is ne
 Resources with an empty monitoring summary, no active datasources, or unexpected auto-property values should be reviewed in LogicMonitor.
 
 
+
 ## Author
 Ryan Gillan  
 Email: ryangillan@gmail.com
-
