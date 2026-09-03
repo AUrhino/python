@@ -172,7 +172,7 @@ def check_resource(resource, include_properties=(), review_active_modules=False,
     monitoring = ",".join(methods)
     row = [resource.get("id"), resource.get("displayName") or resource.get("name"), resource.get("name", ""),
            props.get("auto.entphysical.descr", ""),
-            props.get("predef.externalResourceType", ""), props.get("system.ips", ""), platform,
+            props.get("predef.externalResourceType", ""), props.get("system.ips", ""), resource.get("hostStatus", ""), platform,
             monitoring, minimal_monitoring, "; ".join(modules), "; ".join(names), len(active), props.get("auto.snmp.operational", ""),
             props.get("auto.ssh.available", ""), props.get("auto.ssh.status", ""), props.get("auto.wmi.operational", ""),
             props.get("auto.api.responding", ""),
@@ -263,7 +263,7 @@ def main():
     resource_path = f"/device/groups/{group_id}/devices" if group_id is not None else "/device/devices"
     resources = get_items(resource_path, {"size": 10 if args.test_mode else 1000, "offset": 0}, max_items=10 if args.test_mode else None)
     print(f"Total devices found: {len(resources)}" + (" (test mode limit)" if args.test_mode else ""))
-    headers = ["Resource ID", "Resource", "name_or_fqdn", "Model", "External resource type", "IP addresses", "Type", "Monitoring", "Minimal Monitoring", "Module", "Active datasources (other)", "Active datasource count",
+    headers = ["Resource ID", "Resource", "name_or_fqdn", "Model", "External resource type", "IP addresses", "hostStatus", "Type", "Monitoring", "Minimal Monitoring", "Module", "Active datasources (other)", "Active datasource count",
                "auto.snmp.operational", "auto.ssh.available", "auto.ssh.status", "auto.wmi.operational",
                "auto.api.responding", "system.sysoid"]
     if args.review_active_modules:
