@@ -32,7 +32,7 @@ Group names match either the group name or its full path. If a name is ambiguous
 Use test mode to process only the first 10 devices:
 
 ```bash
-python3 LM_device_type_healthcheck.py --test-mode --csv output/test-healthcheck.csv
+python3 LM_device_type_healthcheck.py --test-mode --format csv
 ```
 
 Create starter files for credentials and module reviews:
@@ -89,31 +89,33 @@ Run the default health check:
 python3 LM_device_type_healthcheck.py
 ```
 
-With no arguments, the script displays help. When run with an operational option but no output destination, it uses credentials from `.env` and writes to `output/healthcheck.csv`. Use `--help` to display command help explicitly.
+With no arguments, the script displays help. When run with an operational option, it uses credentials from `.env` and writes the selected format to `output/healthcheck.<format>`. Use `--help` to display command help explicitly.
 
-When run with options but no output destination, results default to `output/healthcheck.csv`:
+When run with options, results default to `output/healthcheck.csv` unless another format is selected:
 
 ```bash
 python3 LM_device_type_healthcheck.py --group-id 36
 ```
 
-Export the results to CSV as well as displaying them:
+Select the output format with `--format`:
 
 ```bash
-python3 LM_device_type_healthcheck.py --csv output/healthcheck.csv
+python3 LM_device_type_healthcheck.py --format csv
+python3 LM_device_type_healthcheck.py --format html
+python3 LM_device_type_healthcheck.py --format markdown
 ```
 
-Choose a custom output folder. If `--csv` is omitted, the file is named `healthcheck.csv`:
+Choose a custom output folder. Files are automatically named `healthcheck.csv`, `healthcheck.html`, or `healthcheck.md`:
 
 ```bash
-python3 LM_device_type_healthcheck.py --folder output
-python3 LM_device_type_healthcheck.py --folder output --csv device-health.csv
+python3 LM_device_type_healthcheck.py --format html --folder output
+python3 LM_device_type_healthcheck.py --format markdown --folder /tmp/lm-reports
 ```
 
-Save the results as a Markdown table:
+The HTML report supports sorting by clicking column headers and resizing columns by dragging the right edge of a header. In both HTML and Markdown reports, cells whose value is `FALSE` are highlighted red.
 
 ```bash
-python3 LM_device_type_healthcheck.py --markdown output/healthcheck.md
+python3 LM_device_type_healthcheck.py --format markdown --folder output
 ```
 
 Include individual properties using `--included-properties` (or its `--include-properties` alias):
@@ -121,7 +123,7 @@ Include individual properties using `--included-properties` (or its `--include-p
 ```bash
 python3 LM_device_type_healthcheck.py --included-properties predef.externalResourceID
 python3 LM_device_type_healthcheck.py --include-properties predef.externalResourceID,system.ips
-python3 LM_device_type_healthcheck.py --include-properties systemProperties --markdown output/healthcheck.md
+python3 LM_device_type_healthcheck.py --include-properties systemProperties --format markdown
 ```
 
 Property names are read from the resource's custom, system, inherited, and auto property lists. Values are shown in columns named after the requested properties.
@@ -130,13 +132,13 @@ Include additional top-level device API fields with `--extra-fields`:
 
 ```bash
 python3 LM_device_type_healthcheck.py --extra-fields deviceType,enableNetflow,link
-python3 LM_device_type_healthcheck.py --extra-fields hostStatus --csv output/healthcheck.csv
+python3 LM_device_type_healthcheck.py --extra-fields hostStatus --format csv
 ```
 
 Review common active module categories with boolean columns:
 
 ```bash
-python3 LM_device_type_healthcheck.py --review-active-modules --csv output/healthcheck.csv
+python3 LM_device_type_healthcheck.py --review-active-modules --format csv
 ```
 
 The review definitions are stored in `review-active-modules.json`. Each key becomes an output column, and its value (or list of values) is matched case-insensitively as a substring against active datasource names. For example, adding `"TerminalServices": "Terminal Services"` adds a `TerminalServices` column automatically.
@@ -178,11 +180,11 @@ The `Monitoring` column follows the PropertySource logic: `noping` takes precede
 - `Active datasource count`: total active datasource count before exclusions.
 - Auto-properties and `system.sysoid`: supporting monitoring-health details.
 
-Results are written to a file with `--csv` or `--markdown`; the data table is never printed to the screen. Only a write success or failure message with the device count is shown. Markdown reports also include the device count in the file.
+Results are written to a file using `--format {csv,html,markdown}`; the data table is never printed to the screen. Only a write success or failure message with the device count is shown. Markdown and HTML reports also include the device count in the file.
 
 ## Version
 
-Current version: `1.0.0`
+Current version: `1.1.0`
 
 ```bash
 python3 LM_device_type_healthcheck.py --version
