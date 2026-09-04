@@ -16,6 +16,7 @@ import csv
 import hashlib
 import json
 import hmac
+import html
 import os
 import sys
 import time
@@ -31,7 +32,7 @@ ACCESS_ID = os.getenv("ACCESS_ID")
 COMPANY = os.getenv("COMPANY")
 BASE_URL = f"https://{COMPANY}.logicmonitor.com/santaba/rest"
 DEBUG = False
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 def api_get(path, params=None):
@@ -118,6 +119,19 @@ def load_active_module_reviews(path=None):
         raise SystemExit(f"Unable to load {config_path}: {error}")
 
 
+def load_property_status(path=None):
+    config_path = Path(path).expanduser() if path else Path(__file__).with_name("property_status.json")
+    try:
+        with config_path.open(encoding="utf-8") as handle:
+            config = json.load(handle)
+        if not isinstance(config, dict):
+            raise ValueError("the root value must be an object")
+        return {str(key): [str(item).strip().strip("*") for item in (value if isinstance(value, list) else [value])
+                           if str(item).strip().strip("*")] for key, value in config.items()}
+    except (OSError, json.JSONDecodeError, ValueError, AttributeError) as error:
+        raise SystemExit(f"Unable to load {config_path}: {error}")
+
+
 def create_templates():
     templates = {
         Path(".env_example"): "ACCESS_ID=your_access_id\nACCESS_KEY=your_access_key\nCOMPANY=your_company_name\n",
@@ -131,7 +145,9 @@ def create_templates():
         print(f"Template created: {path}")
 
 
-def check_resource(resource, include_properties=(), review_active_modules=False, module_reviews=None):
+def check_resource(resource, include_properties=(), review_active_modules=False, module_reviews=None, property_status=None):
+    property_status = property_status or {}
+    property_names = list(dict.fromkeys(name for names in property_status.values() for name in names))
     props = properties(resource)
     platform = classify(resource, props)
     datasources = get_items(
@@ -158,20 +174,19 @@ def check_resource(resource, include_properties=(), review_active_modules=False,
     if DEBUG:
         debug_properties = {key: props.get(key) for key in
                             ("system.categories", "system.hoststatus", "system.collector",
-                             "auto.activedatasources", "auto.snmp.operational", "auto.wmi.operational",
-                             "auto.api.responding", "auto.ssh.available", "system.sysoid")}
+                             "auto.activedatasources", *property_names, "auto.api.responding", "system.sysoid")}
         print(f"[DEBUG] Resource {resource.get('id')} monitoring properties: {json.dumps(debug_properties, default=str)}")
     if "noping" in categories:
         methods.append("noping")
     else:
         methods.append("DEAD" if hoststatus == "dead" else "ping")
-        if is_true(props.get("auto.snmp.operational")):
+        if any(is_true(props.get(name)) for name in property_status.get("SNMP", [])):
             methods.append("snmp")
-        if is_true(props.get("auto.wmi.operational")):
+        if any(is_true(props.get(name)) for name in property_status.get("WMI", []) + property_status.get("WINRM", [])):
             methods.append("wmi")
         if is_true(props.get("auto.api.responding")):
             methods.append("api")
-        if is_true(props.get("auto.ssh.available")):
+        if any(is_true(props.get(name)) for name in property_status.get("SSH", [])):
             methods.append("ssh")
         datasource_text = " ".join(modules + names).casefold()
         if props.get("system.collector") and "collector" in datasource_text:
@@ -188,9 +203,8 @@ def check_resource(resource, include_properties=(), review_active_modules=False,
     row = [resource.get("id"), resource.get("displayName") or resource.get("name"), resource.get("name", ""),
            props.get("auto.entphysical.descr", ""),
             props.get("predef.externalResourceType", ""), props.get("system.ips", ""), resource.get("hostStatus", ""), platform,
-            monitoring, minimal_monitoring, "; ".join(modules), "; ".join(names), len(active), props.get("auto.snmp.operational", ""),
-            props.get("auto.ssh.available", ""), props.get("auto.ssh.status", ""), props.get("auto.wmi.operational", ""),
-            props.get("auto.api.responding", ""),
+            monitoring, minimal_monitoring, "; ".join(modules), "; ".join(names), len(active),
+            *[props.get(name, "") for name in property_names],
             props.get("system.sysoid", "") if snmp else ""]
     if review_active_modules:
         active_text = " ".join(review_names).casefold()
@@ -201,6 +215,47 @@ def check_resource(resource, include_properties=(), review_active_modules=False,
     for property_name in include_properties:
         row.append(props.get(property_name, ""))
     return row
+
+
+def write_html_report(path, headers, rows):
+    def cell(value):
+        text = "" if value is None else str(value)
+        css = ' class="false-value"' if text.strip().casefold() == "false" else ""
+        return f"<td{css}>{html.escape(text)}</td>"
+
+    header_cells = "".join(f'<th data-column="{index}">{html.escape(str(header))}<span class="resize-handle"></span></th>'
+                            for index, header in enumerate(headers))
+    body = "\n".join("<tr>" + "".join(cell(value) for value in row) + "</tr>" for row in rows)
+    document = f'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>LogicMonitor Device Type Health Check</title>
+<style>
+body {{ font: 14px system-ui, sans-serif; margin: 20px; }}
+.table-wrap {{ overflow: auto; max-height: 85vh; border: 1px solid #ccc; }}
+table {{ border-collapse: collapse; white-space: nowrap; }}
+th, td {{ border: 1px solid #ccc; padding: 6px 9px; text-align: left; }}
+th {{ position: sticky; top: 0; background: #eee; cursor: pointer; user-select: none; }}
+th .resize-handle {{ position: absolute; right: 0; top: 0; width: 7px; height: 100%; cursor: col-resize; }}
+.false-value {{ background: #f8caca; color: #8b0000; font-weight: 600; }}
+</style></head><body><h1>LogicMonitor Device Type Health Check</h1>
+<p>Device count: {len(rows)}</p><div class="table-wrap"><table id="report"><thead><tr>{header_cells}</tr></thead><tbody>{body}</tbody></table></div>
+<script>
+const table = document.getElementById('report');
+table.querySelectorAll('th').forEach((th, index) => {{
+  th.addEventListener('click', event => {{ if (event.target.classList.contains('resize-handle')) return;
+    const rows = [...table.tBodies[0].rows], ascending = th.dataset.order !== 'asc';
+    rows.sort((a,b) => a.cells[index].textContent.localeCompare(b.cells[index].textContent, undefined, {{numeric:true, sensitivity:'base'}}) * (ascending ? 1 : -1));
+    rows.forEach(row => table.tBodies[0].appendChild(row)); th.dataset.order = ascending ? 'asc' : 'desc';
+  }});
+  const handle = th.querySelector('.resize-handle');
+  handle.addEventListener('mousedown', event => {{ event.stopPropagation(); const startX = event.pageX, startWidth = th.offsetWidth;
+    const move = e => th.style.width = Math.max(40, startWidth + e.pageX - startX) + 'px';
+    const stop = () => {{ document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', stop); }};
+    document.addEventListener('mousemove', move); document.addEventListener('mouseup', stop);
+  }});
+}});
+</script></body></html>'''
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(document, encoding="utf-8")
 
 
 def main():
@@ -214,10 +269,9 @@ def main():
             "  python3 LM_device_type_healthcheck.py --create-template\n\n"
             "## Output\n"
             "  Save results as CSV or Markdown. The default CSV is output/healthcheck.csv.\n"
-            "  python3 LM_device_type_healthcheck.py --csv output/healthcheck.csv\n"
-            "  python3 LM_device_type_healthcheck.py --folder output --csv healthcheck.csv\n"
-            "  python3 LM_device_type_healthcheck.py --folder /tmp/lm-reports\n"
-            "  python3 LM_device_type_healthcheck.py --markdown output/healthcheck.md\n\n"
+            "  python3 LM_device_type_healthcheck.py --format csv\n"
+            "  python3 LM_device_type_healthcheck.py --format html --folder output\n"
+            "  python3 LM_device_type_healthcheck.py --format markdown --folder /tmp/lm-reports\n\n"
             "## Filter by group\n"
             "  Check devices in a LogicMonitor group by ID or name/path.\n"
             "  python3 LM_device_type_healthcheck.py --group-id 36\n"
@@ -234,7 +288,7 @@ def main():
             "  Use groups and device fields with these templates to create focused reports.\n\n"
             "## Testing and debug\n"
             "  Limit processing to 10 devices or inspect API/module matching details.\n"
-            "  python3 LM_device_type_healthcheck.py --test-mode --csv output/test-healthcheck.csv\n"
+            "  python3 LM_device_type_healthcheck.py --test-mode --format csv\n"
             "  python3 LM_device_type_healthcheck.py --debug --test-mode\n\n"
             "## Author\n"
             "Ryan Gillan\n"
@@ -243,11 +297,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=__version__)
-    parser.add_argument("--csv", dest="csv_path", help="Also write results to this CSV path.")
+    parser.add_argument("--format", choices=("csv", "html", "markdown"), default="csv",
+                        help="Output format. Defaults to csv.")
     parser.add_argument("--folder", "--output-folder", dest="output_folder",
                         help="Folder for the CSV report. Defaults the filename to healthcheck.csv.")
-    parser.add_argument("--markdown", dest="markdown_path", metavar="PATH",
-                        help="Write the health-check results as a Markdown table.")
     parser.add_argument("--include-properties", "--included-properties", action="append", dest="included_properties",
                         metavar="NAME[,NAME... ]", help="Include named properties as columns. Repeat or use comma-separated names.")
     parser.add_argument("--extra-fields", action="append", dest="extra_fields", metavar="NAME[,NAME... ]",
@@ -262,6 +315,7 @@ def main():
     parser.add_argument("--test-mode", action="store_true", help="Process only the first 10 devices.")
     parser.add_argument("--debug", action="store_true", help="Show API requests and module matching details.")
     parser.add_argument("--modules-file", "--module-file", metavar="PATH", help="Override review-active-modules.json with a custom module definition file.")
+    parser.add_argument("--property-status-file", metavar="PATH", help="Override property_status.json with a custom property definition file.")
     parser.add_argument("--create-template", action="store_true", help="Create .env_example and modules_example.json, then exit.")
     args = parser.parse_args()
     if args.create_template:
@@ -270,11 +324,13 @@ def main():
     if len(sys.argv) == 1:
         parser.print_help()
         return
-    if not args.csv_path and not args.output_folder and not args.markdown_path:
-        args.csv_path = "output/healthcheck.csv"
+    if not args.output_folder:
+        args.output_folder = "output"
     global DEBUG
     DEBUG = args.debug
     module_reviews = load_active_module_reviews(args.modules_file) if args.review_active_modules else {}
+    property_status = load_property_status(args.property_status_file)
+    property_names = list(dict.fromkeys(name for names in property_status.values() for name in names))
     global ACCESS_ID, ACCESS_KEY, COMPANY, BASE_URL
     if args.creds_file:
         credentials_file = Path(args.creds_file).expanduser()
@@ -302,9 +358,9 @@ def main():
     resource_path = f"/device/groups/{group_id}/devices" if group_id is not None else "/device/devices"
     resources = get_items(resource_path, {"size": 10 if args.test_mode else 1000, "offset": 0}, max_items=10 if args.test_mode else None)
     print(f"Total devices found: {len(resources)}" + (" (test mode limit)" if args.test_mode else ""))
-    headers = ["Resource ID", "Resource", "name_or_fqdn", "Model", "External resource type", "IP addresses", "hostStatus", "Type", "Monitoring", "Minimal Monitoring", "Module", "Active datasources (other)", "Active datasource count",
-               "auto.snmp.operational", "auto.ssh.available", "auto.ssh.status", "auto.wmi.operational",
-               "auto.api.responding", "system.sysoid"]
+    headers = ["Resource ID", "Resource", "name_or_fqdn", "Model", "External resource type", "IP addresses", "hostStatus", "Type", "Monitoring", "Minimal Monitoring", "Module", "Active datasources (other)", "Active datasource count"]
+    headers.extend(property_names)
+    headers.append("system.sysoid")
     if args.review_active_modules:
         headers.extend(module_reviews)
     included_properties = []
@@ -320,13 +376,11 @@ def main():
     rows = []
     for resource in resources:
         if isinstance(resource, dict) and resource.get("id") is not None:
-            row = check_resource(resource, included_properties, args.review_active_modules, module_reviews)
+            row = check_resource(resource, included_properties, args.review_active_modules, module_reviews, property_status)
             row.extend(resource.get(field, "") for field in extra_fields)
             rows.append(row)
-    if args.csv_path or args.output_folder:
-        output = Path(args.csv_path or "healthcheck.csv").expanduser()
-        if args.output_folder:
-            output = Path(args.output_folder).expanduser() / output.name
+    output = Path(args.output_folder).expanduser() / f"healthcheck.{'md' if args.format == 'markdown' else args.format}"
+    if args.format == "csv":
         try:
             output.parent.mkdir(parents=True, exist_ok=True)
             with output.open("w", newline="", encoding="utf-8-sig") as handle:
@@ -336,15 +390,29 @@ def main():
             print(f"CSV write successful: {output} ({len(rows)} devices written)")
         except OSError as error:
             print(f"CSV write failed: {error}")
-    if args.markdown_path:
-        output = Path(args.markdown_path).expanduser()
+    if args.format == "markdown":
+        try:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            markdown_rows = ["| " + " | ".join(headers) + " |", "| " + " | ".join("---" for _ in headers) + " |"]
+            for row in rows:
+                values = []
+                for value in row:
+                    text = str(value).replace("|", "\\|").replace("\n", " ")
+                    if text.strip().casefold() == "false":
+                        text = f'<span style="color:#8b0000;background-color:#f8caca;font-weight:600">{text}</span>'
+                    values.append(text)
+                markdown_rows.append("| " + " | ".join(values) + " |")
+            output.write_text(f"# LogicMonitor Device Type Health Check\n\nDevice count: {len(rows)}\n\n" + "\n".join(markdown_rows) + "\n", encoding="utf-8")
+            print(f"Markdown write successful: {output} ({len(rows)} devices written)")
+        except OSError as error:
+            print(f"Markdown write failed: {error}")
+    if args.format == "html":
         output.parent.mkdir(parents=True, exist_ok=True)
-        markdown_rows = ["| " + " | ".join(headers) + " |", "| " + " | ".join("---" for _ in headers) + " |"]
-        for row in rows:
-            values = [str(value).replace("|", "\\|").replace("\n", " ") for value in row]
-            markdown_rows.append("| " + " | ".join(values) + " |")
-        output.write_text(f"# LogicMonitor Device Type Health Check\n\nDevice count: {len(rows)}\n\n" + "\n".join(markdown_rows) + "\n", encoding="utf-8")
-        print(f"Markdown write successful: {output} ({len(rows)} devices written)")
+        try:
+            write_html_report(output, headers, rows)
+            print(f"HTML write successful: {output} ({len(rows)} devices written)")
+        except OSError as error:
+            print(f"HTML write failed: {error}")
 
 
 if __name__ == "__main__":
