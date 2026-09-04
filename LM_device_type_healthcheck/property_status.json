@@ -1,0 +1,7 @@
+{
+  "SNMP": ["auto.snmp.operational"],
+  "SNMP_error": ["auto.snmp.error"],
+  "SSH": ["auto.ssh.available"],
+  "WMI": ["auto.wmi.operational"],
+  "WINRM": ["auto.winrm"]
+}
